@@ -3,6 +3,7 @@ import { supabase } from '../../../lib/supabase'
 import * as toGeoJSON from '@tmcw/togeojson'
 import { DOMParser } from 'xmldom'
 import JSZip from 'jszip'
+import { geomLengthKm } from '../../../lib/geo'
 
 export const runtime = 'nodejs'
 export const maxDuration = 120
@@ -47,7 +48,50 @@ function childText(el: any, tag: string): string | null {
   return null
 }
 
-function extractInlineColor(placemark: any): string | null {
+function parseDocumentStyles(doc: any): Record<string, string | null> {
+  const styles: Record<string, { color: string | null }> = {}
+  const styleEls = doc.getElementsByTagName('Style')
+  for (let i = 0; i < styleEls.length; i++) {
+    const el = styleEls[i]
+    const id = el.getAttribute('id')
+    if (!id) continue
+    let color: string | null = null
+    for (const tag of ['LineStyle', 'PolyStyle', 'IconStyle']) {
+      const sub = el.getElementsByTagName(tag)
+      if (sub.length > 0) {
+        const colorEl = sub[0].getElementsByTagName('color')[0]
+        const hex = abgrToHex(colorEl?.firstChild?.nodeValue)
+        if (hex) { color = hex; break }
+      }
+    }
+    styles[id] = { color }
+  }
+  const result: Record<string, string | null> = {}
+  for (const [id, s] of Object.entries(styles)) {
+    result[id] = s.color
+  }
+  const styleMaps = doc.getElementsByTagName('StyleMap')
+  for (let i = 0; i < styleMaps.length; i++) {
+    const sm = styleMaps[i]
+    const id = sm.getAttribute('id')
+    if (!id) continue
+    const pairs = sm.getElementsByTagName('Pair')
+    for (let j = 0; j < pairs.length; j++) {
+      const keyEl = pairs[j].getElementsByTagName('key')[0]
+      if (keyEl?.firstChild?.nodeValue?.trim() === 'normal') {
+        const urlEl = pairs[j].getElementsByTagName('styleUrl')[0]
+        const ref = urlEl?.firstChild?.nodeValue?.trim()?.replace('#', '')
+        if (ref && result[ref] !== undefined) {
+          result[id] = result[ref]
+        }
+        break
+      }
+    }
+  }
+  return result
+}
+
+function extractColor(placemark: any, docStyles: Record<string, string | null>): string | null {
   const styles = placemark.getElementsByTagName('Style')
   for (let i = 0; i < styles.length; i++) {
     for (const tag of ['LineStyle', 'IconStyle', 'PolyStyle']) {
@@ -59,19 +103,24 @@ function extractInlineColor(placemark: any): string | null {
       }
     }
   }
+  const styleUrlEl = placemark.getElementsByTagName('styleUrl')[0]
+  const styleRef = styleUrlEl?.firstChild?.nodeValue?.trim()?.replace('#', '')
+  if (styleRef && docStyles[styleRef] !== undefined) {
+    return docStyles[styleRef]
+  }
   return null
 }
 
-function walkKml(node: any, folder: string[], out: Annotation[]) {
+function walkKml(node: any, folder: string[], out: Annotation[], docStyles: Record<string, string | null>) {
   for (const el of childElements(node)) {
     if (el.tagName === 'Placemark') {
-      out.push({ folder, color: extractInlineColor(el) })
+      out.push({ folder, color: extractColor(el, docStyles) })
     } else if (el.tagName === 'Folder') {
       const name = childText(el, 'name')
       const nextFolder = name ? [...folder, name] : folder
-      walkKml(el, nextFolder, out)
+      walkKml(el, nextFolder, out, docStyles)
     } else {
-      walkKml(el, folder, out)
+      walkKml(el, folder, out, docStyles)
     }
   }
 }
@@ -85,8 +134,9 @@ function parseKml(text: string) {
   }).parseFromString(cleaned, 'text/xml')
   const docEl = dom.getElementsByTagName('Document')[0]
   const docName = docEl ? childText(docEl, 'name') : null
+  const docStyles = parseDocumentStyles(docEl || dom)
   const annotations: Annotation[] = []
-  walkKml(docEl || dom, [], annotations)
+  walkKml(docEl || dom, [], annotations, docStyles)
   const geojson = toGeoJSON.kml(dom)
   return { geojson, docName, annotations }
 }
@@ -159,8 +209,26 @@ export async function POST(request: NextRequest) {
       ;({ geojson, docName, annotations } = parseKml(text))
     } else if (lower.endsWith('.geojson')) {
       geojson = JSON.parse(await file.text())
+    } else if (lower.endsWith('.csv')) {
+      const text = await file.text()
+      const lines = text.split(/\r?\n/).filter(l => l.trim())
+      if (lines.length < 2) return NextResponse.json({ error: 'CSV is empty' }, { status: 400 })
+      const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''))
+      const latIdx = headers.findIndex(h => /^lat(itude)?$/i.test(h))
+      const lngIdx = headers.findIndex(h => /^(lon|lng|long)(itude)?$/i.test(h))
+      if (latIdx === -1 || lngIdx === -1) return NextResponse.json({ error: 'CSV needs latitude and longitude columns' }, { status: 400 })
+      const features = lines.slice(1).map(line => {
+        const cols = line.split(',').map(c => c.trim().replace(/^"|"$/g, ''))
+        const lat = parseFloat(cols[latIdx]), lng = parseFloat(cols[lngIdx])
+        if (isNaN(lat) || isNaN(lng)) return null
+        const props: any = {}
+        headers.forEach((h, i) => { if (i !== latIdx && i !== lngIdx && cols[i]) props[h] = cols[i] })
+        return { type: 'Feature' as const, geometry: { type: 'Point' as const, coordinates: [lng, lat] }, properties: props }
+      }).filter(Boolean)
+      geojson = { type: 'FeatureCollection', features }
+      docName = file.name.replace(/\.csv$/i, '')
     } else {
-      return NextResponse.json({ error: 'Unsupported file type. Use .kml, .kmz, or .geojson' }, { status: 400 })
+      return NextResponse.json({ error: 'Unsupported file type. Use .kml, .kmz, .geojson, or .csv' }, { status: 400 })
     }
 
     if (!geojson?.features?.length) {
@@ -191,11 +259,14 @@ export async function POST(request: NextRequest) {
         if (ann.color) properties.__color = ann.color
       }
       collectCoords(geometry, (c) => { bboxRef.current = extendBbox(bboxRef.current, c) })
+      const lengthKm = geomLengthKm(geometry)
       rows.push({
         dataset_id: datasetId,
         type: properties.type || geometry.type,
+        name: properties.name || properties.Name || null,
         geometry,
         properties,
+        length_km: lengthKm > 0 ? parseFloat(lengthKm.toFixed(3)) : null,
       })
     })
 
