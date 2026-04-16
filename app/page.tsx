@@ -113,50 +113,102 @@ export default function Home() {
   const totalLayers = useMemo(() => groups.reduce((s, g) => s + g.layers.length, 0), [groups])
   const allLayers = useMemo(() => groups.flatMap(g => g.layers.map(l => ({ ...l, visible: l.visible && g.visible }))), [groups])
 
-  /* File handling */
-  const processFile = useCallback(async (file: File) => {
-    const ext = file.name.split('.').pop()?.toLowerCase()
-    setLoading(true)
-    try {
-      let layerDefs: { name: string; geojson: GeoJSON.FeatureCollection }[]
-      if (ext === 'kml') layerDefs = await parseKMLFile(file)
-      else if (ext === 'kmz') layerDefs = await parseKMZFile(file)
-      else if (ext === 'geojson' || ext === 'json') layerDefs = await parseGeoJSONFile(file)
-      else { showToast(`Unsupported format: .${ext}`, 'warn'); setLoading(false); return }
-      if (!layerDefs?.length) throw new Error('No features found')
-      const groupId = gid++
-      const items: LayerData[] = layerDefs.map(def => ({ id: String(lid++), name: def.name, color: LAYER_TYPES[autoType(def.name)].color, visible: true, geojson: def.geojson, geomType: detectGeomType(def.geojson), count: def.geojson.features.length, fillAttr: null, colorMap: null }))
-      setGroups(prev => [...prev, { id: groupId, filename: file.name, expanded: true, visible: true, layers: items }])
-      showToast(`${file.name} — ${items.reduce((s, l) => s + l.count, 0)} features in ${items.length} layer${items.length > 1 ? 's' : ''}`)
-    } catch (e: any) { showToast(`${file.name}: ${e.message}`, 'error') }
-    setLoading(false)
-  }, [showToast])
-
-  const onDrop = useCallback((e: React.DragEvent) => { e.preventDefault(); [...e.dataTransfer.files].forEach(processFile) }, [processFile])
-  const onFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => { [...(e.target.files || [])].forEach(processFile); e.target.value = '' }, [processFile])
-
   /* Load saved datasets from DB */
   const [savedDatasets, setSavedDatasets] = useState<{ id: number; name: string; feature_count: number }[]>([])
   const [loadedDatasetIds, setLoadedDatasetIds] = useState<Set<number>>(new Set())
-  useEffect(() => { fetch('/api/datasets').then(r => r.json()).then(d => { if (Array.isArray(d)) setSavedDatasets(d) }).catch(console.error) }, [])
+
+  const refreshDatasets = useCallback(async () => {
+    try { const d = await fetch('/api/datasets').then(r => r.json()); if (Array.isArray(d)) setSavedDatasets(d) } catch {}
+  }, [])
 
   const loadFromDB = useCallback(async (ds: { id: number; name: string; feature_count: number }) => {
     if (loadedDatasetIds.has(ds.id)) return
     setLoading(true)
     try {
-      const res = await fetch(`/api/assets?dataset_id=${ds.id}`)
-      const assets = await res.json()
+      const assets = await fetch(`/api/assets?dataset_id=${ds.id}`).then(r => r.json())
       if (!Array.isArray(assets) || !assets.length) { showToast('No features in dataset', 'warn'); setLoading(false); return }
-      const features: GeoJSON.Feature[] = assets.map((a: any) => ({ type: 'Feature' as const, geometry: a.geometry, properties: { ...a.properties, name: a.name || a.properties?.name, _color: a.properties?._color } }))
+      const features: GeoJSON.Feature[] = assets.map((a: any) => ({ type: 'Feature' as const, geometry: a.geometry, properties: { ...a.properties, name: a.name || a.properties?.name, _color: a.properties?.__color || a.properties?._color } }))
       const geojson: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features }
       const groupId = gid++
       const layer: LayerData = { id: String(lid++), name: ds.name, color: LAYER_TYPES[autoType(ds.name)].color, visible: true, geojson, geomType: detectGeomType(geojson), count: features.length, fillAttr: null, colorMap: null }
       setGroups(prev => [...prev, { id: groupId, filename: `📂 ${ds.name}`, expanded: true, visible: true, layers: [layer] }])
       setLoadedDatasetIds(prev => new Set(prev).add(ds.id))
-      showToast(`Loaded "${ds.name}" — ${features.length} features from database`)
+      showToast(`Loaded "${ds.name}" — ${features.length} features`)
     } catch (e: any) { showToast(`Failed to load: ${e.message}`, 'error') }
     setLoading(false)
   }, [loadedDatasetIds, showToast])
+
+  /* Auto-load all saved datasets on mount */
+  useEffect(() => {
+    let mounted = true
+    async function autoLoad() {
+      try {
+        const datasets = await fetch('/api/datasets').then(r => r.json())
+        if (!Array.isArray(datasets) || !mounted) return
+        setSavedDatasets(datasets)
+        // Load each dataset onto the map
+        for (const ds of datasets) {
+          if (!mounted) break
+          try {
+            const assets = await fetch(`/api/assets?dataset_id=${ds.id}`).then(r => r.json())
+            if (!Array.isArray(assets) || !assets.length) continue
+            const features: GeoJSON.Feature[] = assets.map((a: any) => ({ type: 'Feature' as const, geometry: a.geometry, properties: { ...a.properties, name: a.name || a.properties?.name, _color: a.properties?.__color || a.properties?._color } }))
+            const geojson: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features }
+            const groupId = gid++
+            const layer: LayerData = { id: String(lid++), name: ds.name, color: LAYER_TYPES[autoType(ds.name)].color, visible: true, geojson, geomType: detectGeomType(geojson), count: features.length, fillAttr: null, colorMap: null }
+            if (mounted) {
+              setGroups(prev => [...prev, { id: groupId, filename: `📂 ${ds.name}`, expanded: true, visible: true, layers: [layer] }])
+              setLoadedDatasetIds(prev => new Set(prev).add(ds.id))
+            }
+          } catch {}
+        }
+      } catch {}
+    }
+    autoLoad()
+    return () => { mounted = false }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* File handling — upload to DB + show on map */
+  const processFile = useCallback(async (file: File) => {
+    const ext = file.name.split('.').pop()?.toLowerCase()
+    if (!['kml', 'kmz', 'geojson', 'json', 'csv'].includes(ext || '')) { showToast(`Unsupported format: .${ext}`, 'warn'); return }
+    setLoading(true)
+    try {
+      // 1. Upload to database via API
+      const formData = new FormData()
+      formData.append('file', file)
+      const uploadRes = await fetch('/api/upload', { method: 'POST', body: formData })
+      const uploadData = await uploadRes.json()
+      if (!uploadRes.ok) throw new Error(uploadData.error || 'Upload failed')
+
+      // 2. Parse client-side for immediate map display
+      let layerDefs: { name: string; geojson: GeoJSON.FeatureCollection }[]
+      if (ext === 'kml') layerDefs = await parseKMLFile(file)
+      else if (ext === 'kmz') layerDefs = await parseKMZFile(file)
+      else if (ext === 'geojson' || ext === 'json') layerDefs = await parseGeoJSONFile(file)
+      else layerDefs = [] // CSV handled server-side only
+
+      if (layerDefs.length > 0) {
+        const groupId = gid++
+        const dsId = uploadData.dataset?.id
+        const items: LayerData[] = layerDefs.map(def => ({ id: String(lid++), name: def.name, color: LAYER_TYPES[autoType(def.name)].color, visible: true, geojson: def.geojson, geomType: detectGeomType(def.geojson), count: def.geojson.features.length, fillAttr: null, colorMap: null }))
+        setGroups(prev => [...prev, { id: groupId, filename: file.name, expanded: true, visible: true, layers: items }])
+        if (dsId) setLoadedDatasetIds(prev => new Set(prev).add(dsId))
+      } else if (uploadData.dataset) {
+        // For CSV or fallback: reload from DB
+        await loadFromDB(uploadData.dataset)
+      }
+
+      // 3. Refresh saved datasets list
+      refreshDatasets()
+      const fc = uploadData.dataset?.feature_count || 0
+      showToast(`${file.name} — ${fc} features saved to database & displayed on map`)
+    } catch (e: any) { showToast(`${file.name}: ${e.message}`, 'error') }
+    setLoading(false)
+  }, [showToast, loadFromDB, refreshDatasets])
+
+  const onDrop = useCallback((e: React.DragEvent) => { e.preventDefault(); [...e.dataTransfer.files].forEach(processFile) }, [processFile])
+  const onFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => { [...(e.target.files || [])].forEach(processFile); e.target.value = '' }, [processFile])
 
   /* Actions */
   const toggleGroup = (id: number) => setGroups(p => p.map(g => g.id === id ? { ...g, visible: !g.visible } : g))

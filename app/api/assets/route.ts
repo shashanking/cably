@@ -1,20 +1,36 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '../../../lib/supabase'
 
-export async function GET(request: NextRequest) {
-  try {
-    const datasetId = request.nextUrl.searchParams.get('dataset_id')
+export const runtime = 'nodejs'
+
+async function fetchAllAssets(datasetId?: number) {
+  const PAGE = 1000
+  let all: any[] = []
+  let from = 0
+
+  while (true) {
     let query = supabase
       .from('assets')
       .select('id, dataset_id, type, name, status, vendor_id, cost_per_km, total_cost, length_km, geometry, properties, created_at, updated_at')
-    if (datasetId) query = query.eq('dataset_id', Number(datasetId))
+      .range(from, from + PAGE - 1)
+    if (datasetId) query = query.eq('dataset_id', datasetId)
 
     const { data, error } = await query
-    if (error) {
-      console.error('Supabase error:', error)
-      return NextResponse.json([])
-    }
-    return NextResponse.json(data || [])
+    if (error) { console.error('Supabase error:', error); break }
+    if (!data || data.length === 0) break
+    all = all.concat(data)
+    if (data.length < PAGE) break
+    from += PAGE
+  }
+
+  return all
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const datasetId = request.nextUrl.searchParams.get('dataset_id')
+    const data = await fetchAllAssets(datasetId ? Number(datasetId) : undefined)
+    return NextResponse.json(data)
   } catch (error) {
     console.error('API error:', error)
     return NextResponse.json([])
@@ -40,7 +56,6 @@ export async function POST(request: Request) {
       cost_per_km: cost_per_km ? Number(cost_per_km) : null,
       length_km: length_km ? Number(length_km) : null,
     }
-    // Auto-calculate total_cost
     if (total_cost) {
       row.total_cost = Number(total_cost)
     } else if (row.cost_per_km && row.length_km) {

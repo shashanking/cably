@@ -141,9 +141,12 @@ function MyMapComponent({
       if (!layer.visible) continue
 
       for (const feature of layer.geojson.features) {
-        const geom = feature.geometry
+        let geom = feature.geometry
         if (!geom) continue
-        const raw = (feature.properties as any)?._color as string | undefined
+        // Handle geometry stored as string (from some DB drivers)
+        if (typeof geom === 'string') { try { geom = JSON.parse(geom) } catch { continue } }
+        if (!geom || !geom.type) continue
+        const raw = ((feature.properties as any)?._color || (feature.properties as any)?.__color) as string | undefined
         const color = (raw && !isWashedOut(raw)) ? raw : layer.color
         const fName = (feature.properties as any)?.name || (feature.properties as any)?.Name || ''
 
@@ -154,9 +157,9 @@ function MyMapComponent({
           onFeatureClick?.(feature, color, layer.name)
         }
 
-        const drawPoint = (coord: number[]) => {
-          if (coord.length < 2 || isNaN(coord[0]) || isNaN(coord[1])) return
-          const pos = { lat: coord[1], lng: coord[0] }
+        const drawPoint = (coord: any) => {
+          if (!Array.isArray(coord) || coord.length < 2 || isNaN(Number(coord[0])) || isNaN(Number(coord[1]))) return
+          const pos = { lat: Number(coord[1]), lng: Number(coord[0]) }
           if (AdvMarker) {
             const pin = makeCirclePin(color)
             pin.title = fName || layer.name
@@ -174,8 +177,9 @@ function MyMapComponent({
           bounds.extend(pos); hasFeatures = true
         }
 
-        const drawLine = (coords: number[][]) => {
-          const path = coords.filter(c => c.length >= 2 && !isNaN(c[0]) && !isNaN(c[1])).map(c => ({ lat: c[1], lng: c[0] }))
+        const drawLine = (coords: any[]) => {
+          if (!Array.isArray(coords)) return
+          const path = coords.filter(c => Array.isArray(c) && c.length >= 2 && !isNaN(Number(c[0])) && !isNaN(Number(c[1]))).map(c => ({ lat: Number(c[1]), lng: Number(c[0]) }))
           if (path.length < 2) return
           const shadow = new google.maps.Polyline({ path, strokeColor: '#000000', strokeOpacity: 0.08, strokeWeight: 6, map })
           newOverlays.push(shadow)
@@ -188,8 +192,9 @@ function MyMapComponent({
           path.forEach(c => bounds.extend(c)); hasFeatures = true
         }
 
-        const drawPolygon = (rings: number[][][]) => {
-          const paths = rings.map(ring => ring.filter(c => c.length >= 2).map(c => ({ lat: c[1], lng: c[0] })))
+        const drawPolygon = (rings: any[]) => {
+          if (!Array.isArray(rings)) return
+          const paths = rings.map((ring: any[]) => (Array.isArray(ring) ? ring : []).filter((c: any) => Array.isArray(c) && c.length >= 2).map((c: any) => ({ lat: Number(c[1]), lng: Number(c[0]) })))
           if (!paths[0]?.length) return
           const polygon = new google.maps.Polygon({ paths, strokeColor: color, strokeOpacity: 0.8, strokeWeight: 2, fillColor: color, fillOpacity: 0.2, map })
           polygon.addListener('click', (e: any) => showInfo(e.latLng))
@@ -198,14 +203,15 @@ function MyMapComponent({
         }
 
         const drawGeometry = (g: any) => {
-          if (!g) return
-          if (g.type === 'Point') drawPoint(g.coordinates)
-          else if (g.type === 'MultiPoint') g.coordinates?.forEach(drawPoint)
-          else if (g.type === 'LineString') drawLine(g.coordinates)
-          else if (g.type === 'MultiLineString') g.coordinates?.forEach(drawLine)
-          else if (g.type === 'Polygon') drawPolygon(g.coordinates)
-          else if (g.type === 'MultiPolygon') g.coordinates?.forEach(drawPolygon)
-          else if (g.type === 'GeometryCollection') g.geometries?.forEach(drawGeometry)
+          if (!g || !g.type) return
+          const coords = g.coordinates
+          if (g.type === 'Point' && coords) drawPoint(coords)
+          else if (g.type === 'MultiPoint' && Array.isArray(coords)) coords.forEach(drawPoint)
+          else if (g.type === 'LineString' && Array.isArray(coords)) drawLine(coords)
+          else if (g.type === 'MultiLineString' && Array.isArray(coords)) coords.forEach((l: any) => drawLine(l))
+          else if (g.type === 'Polygon' && Array.isArray(coords)) drawPolygon(coords)
+          else if (g.type === 'MultiPolygon' && Array.isArray(coords)) coords.forEach((p: any) => drawPolygon(p))
+          else if (g.type === 'GeometryCollection' && Array.isArray(g.geometries)) g.geometries.forEach(drawGeometry)
         }
 
         drawGeometry(geom)

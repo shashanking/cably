@@ -3,65 +3,41 @@ import { supabase } from '../../../../lib/supabase'
 
 export const runtime = 'nodejs'
 
+async function fetchAllLightAssets() {
+  const PAGE = 1000
+  let all: any[] = []
+  let from = 0
+  while (true) {
+    const { data, error } = await supabase.from('assets').select('type, status, length_km, total_cost').range(from, from + PAGE - 1)
+    if (error || !data || data.length === 0) break
+    all = all.concat(data)
+    if (data.length < PAGE) break
+    from += PAGE
+  }
+  return all
+}
+
 export async function GET(_request: NextRequest) {
   try {
-    // Fetch all assets for aggregation
-    const { data: assets, error: assetsError } = await supabase
-      .from('assets')
-      .select('type, status, length_km, total_cost')
+    const rows = await fetchAllLightAssets()
 
-    if (assetsError) {
-      console.error('Assets query error:', assetsError)
-      return NextResponse.json({ error: 'Failed to fetch assets' }, { status: 500 })
-    }
+    const { count: totalDatasets } = await supabase.from('datasets').select('*', { count: 'exact', head: true })
+    const { data: recentDatasets } = await supabase.from('datasets').select('*').order('created_at', { ascending: false }).limit(5)
 
-    // Fetch dataset count
-    const { count: totalDatasets, error: datasetsError } = await supabase
-      .from('datasets')
-      .select('*', { count: 'exact', head: true })
-
-    if (datasetsError) {
-      console.error('Datasets count error:', datasetsError)
-      return NextResponse.json({ error: 'Failed to fetch datasets count' }, { status: 500 })
-    }
-
-    // Fetch recent datasets
-    const { data: recentDatasets, error: recentError } = await supabase
-      .from('datasets')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(5)
-
-    if (recentError) {
-      console.error('Recent datasets error:', recentError)
-      return NextResponse.json({ error: 'Failed to fetch recent datasets' }, { status: 500 })
-    }
-
-    const rows = assets || []
-    const totalAssets = rows.length
-    let totalLengthKm = 0
-    let totalCost = 0
-    const byType: Record<string, number> = {}
-    const byStatus: Record<string, number> = {}
+    let totalLengthKm = 0, totalCost = 0
+    const byType: Record<string, number> = {}, byStatus: Record<string, number> = {}
 
     for (const row of rows) {
       totalLengthKm += Number(row.length_km) || 0
       totalCost += Number(row.total_cost) || 0
-
-      const type = row.type ?? 'unknown'
-      byType[type] = (byType[type] || 0) + 1
-
-      const status = row.status ?? 'unknown'
-      byStatus[status] = (byStatus[status] || 0) + 1
+      const type = row.type ?? 'unknown'; byType[type] = (byType[type] || 0) + 1
+      const status = row.status ?? 'unknown'; byStatus[status] = (byStatus[status] || 0) + 1
     }
 
     return NextResponse.json({
-      totalAssets,
+      totalAssets: rows.length,
       totalDatasets: totalDatasets ?? 0,
-      totalLengthKm,
-      totalCost,
-      byType,
-      byStatus,
+      totalLengthKm, totalCost, byType, byStatus,
       recentDatasets: recentDatasets || [],
     })
   } catch (error) {
