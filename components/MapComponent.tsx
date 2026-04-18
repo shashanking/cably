@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { Wrapper, Status } from '@googlemaps/react-wrapper'
+import { getOwnerValue } from '../lib/styling'
 
 const mapStyle: google.maps.MapTypeStyle[] = [
   { featureType: 'poi', stylers: [{ visibility: 'off' }] },
@@ -27,6 +28,19 @@ export interface GeoLayer {
   count: number
   fillAttr?: string | null
   colorMap?: any
+}
+
+export interface MapFilter {
+  hiddenVendors?: Set<string>
+  hiddenOwners?: Set<string>
+  vendorColorMap?: Record<string, string>
+  ownerColorMap?: Record<string, string>
+  colorMode?: 'layer' | 'vendor' | 'owner'
+}
+
+export interface RenderProgress {
+  featuresPlotted: number
+  featuresTotal: number
 }
 
 function isWashedOut(hex: string): boolean {
@@ -87,20 +101,39 @@ function zoomMapToFeature(map: google.maps.Map, feature: GeoJSON.Feature) {
   }
 }
 
+function vendorIdOf(feature: GeoJSON.Feature): string | null {
+  const p: any = feature.properties || {}
+  const id = p.vendor_id ?? p.vendorId ?? p.__vendor_id
+  if (id == null || id === '') return null
+  return String(id)
+}
+
 function MyMapComponent({
   layers,
   onFeatureClick,
   selectedFeature,
+  filter,
+  onRenderProgress,
 }: {
   layers: GeoLayer[]
   onFeatureClick?: (feature: GeoJSON.Feature, color: string, layerName: string) => void
   selectedFeature?: GeoJSON.Feature | null
+  filter?: MapFilter
+  onRenderProgress?: (p: RenderProgress) => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const [map, setMap] = useState<google.maps.Map | null>(null)
   const overlaysRef = useRef<Removable[]>([])
   const infoRef = useRef<google.maps.InfoWindow | null>(null)
   const highlightRef = useRef<google.maps.Polyline | google.maps.Polygon | null>(null)
+  const hasAutoFitted = useRef<boolean>(false)
+  const renderCancelRef = useRef<{ cancelled: boolean }>({ cancelled: false })
+
+  // Keep latest callbacks in refs so they don't invalidate the render effect.
+  const onFeatureClickRef = useRef(onFeatureClick)
+  const onRenderProgressRef = useRef(onRenderProgress)
+  useEffect(() => { onFeatureClickRef.current = onFeatureClick }, [onFeatureClick])
+  useEffect(() => { onRenderProgressRef.current = onRenderProgress }, [onRenderProgress])
 
   useEffect(() => {
     if (ref.current && !map) {
@@ -129,7 +162,13 @@ function MyMapComponent({
   useEffect(() => {
     if (!map) return
 
+    // Cancel any in-flight render
+    renderCancelRef.current.cancelled = true
+    const cancelToken = { cancelled: false }
+    renderCancelRef.current = cancelToken
+
     overlaysRef.current.forEach(removeOverlay)
+    overlaysRef.current = []
     const newOverlays: Removable[] = []
     const bounds = new google.maps.LatLngBounds()
     let hasFeatures = false
@@ -137,98 +176,164 @@ function MyMapComponent({
 
     const AdvMarker = google.maps.marker?.AdvancedMarkerElement
 
+    // Build the flat feature queue with pre-resolved colors
+    type Item = { feature: GeoJSON.Feature; color: string; layerName: string; geom: any; fName: string }
+    const queue: Item[] = []
+
+    const hiddenVendors = filter?.hiddenVendors
+    const hiddenOwners = filter?.hiddenOwners
+    const vendorColorMap = filter?.vendorColorMap
+    const ownerColorMap = filter?.ownerColorMap
+    const colorMode = filter?.colorMode || 'layer'
+
     for (const layer of layers) {
       if (!layer.visible) continue
 
       for (const feature of layer.geojson.features) {
-        let geom = feature.geometry
+        let geom = feature.geometry as any
         if (!geom) continue
-        // Handle geometry stored as string (from some DB drivers)
         if (typeof geom === 'string') { try { geom = JSON.parse(geom) } catch { continue } }
         if (!geom || !geom.type) continue
+
+        // Vendor filter
+        const vid = vendorIdOf(feature)
+        if (hiddenVendors && hiddenVendors.size > 0) {
+          const key = vid ?? '__none__'
+          if (hiddenVendors.has(key)) continue
+        }
+
+        // Owner filter
+        const owner = getOwnerValue(feature.properties) || null
+        if (hiddenOwners && hiddenOwners.size > 0) {
+          const key = owner ?? '__none__'
+          if (hiddenOwners.has(key)) continue
+        }
+
+        // Pick color
         const raw = ((feature.properties as any)?._color || (feature.properties as any)?.__color) as string | undefined
-        const color = (raw && !isWashedOut(raw)) ? raw : layer.color
+        let color = (raw && !isWashedOut(raw)) ? raw : layer.color
+        if (colorMode === 'vendor' && vendorColorMap) {
+          color = vendorColorMap[vid ?? '__none__'] || '#94a3b8'
+        } else if (colorMode === 'owner' && ownerColorMap) {
+          color = ownerColorMap[owner ?? '__none__'] || '#94a3b8'
+        }
+
         const fName = (feature.properties as any)?.name || (feature.properties as any)?.Name || ''
-
-        const showInfo = (pos: google.maps.LatLng | google.maps.LatLngLiteral) => {
-          info.setContent(featureInfoHtml(feature, color, layer.name))
-          info.setPosition(pos)
-          info.open(map)
-          onFeatureClick?.(feature, color, layer.name)
-        }
-
-        const drawPoint = (coord: any) => {
-          if (!Array.isArray(coord) || coord.length < 2 || isNaN(Number(coord[0])) || isNaN(Number(coord[1]))) return
-          const pos = { lat: Number(coord[1]), lng: Number(coord[0]) }
-          if (AdvMarker) {
-            const pin = makeCirclePin(color)
-            pin.title = fName || layer.name
-            const marker = new AdvMarker({ position: pos, map, title: fName || layer.name, content: pin })
-            marker.addListener('click', () => showInfo(pos))
-            newOverlays.push(marker)
-          } else {
-            const marker = new google.maps.Marker({
-              position: pos, map, title: fName || layer.name,
-              icon: { path: google.maps.SymbolPath.CIRCLE, scale: 7, fillColor: color, fillOpacity: 0.95, strokeColor: '#fff', strokeWeight: 2 },
-            })
-            marker.addListener('click', () => showInfo(pos))
-            newOverlays.push(marker)
-          }
-          bounds.extend(pos); hasFeatures = true
-        }
-
-        const drawLine = (coords: any[]) => {
-          if (!Array.isArray(coords)) return
-          const path = coords.filter(c => Array.isArray(c) && c.length >= 2 && !isNaN(Number(c[0])) && !isNaN(Number(c[1]))).map(c => ({ lat: Number(c[1]), lng: Number(c[0]) }))
-          if (path.length < 2) return
-          const shadow = new google.maps.Polyline({ path, strokeColor: '#000000', strokeOpacity: 0.08, strokeWeight: 6, map })
-          newOverlays.push(shadow)
-          const polyline = new google.maps.Polyline({ path, strokeColor: color, strokeOpacity: 0.9, strokeWeight: 3, map })
-          polyline.addListener('click', (e: any) => showInfo(e.latLng))
-          // Hover: thicken line
-          polyline.addListener('mouseover', () => { polyline.setOptions({ strokeWeight: 5, strokeOpacity: 1 }) })
-          polyline.addListener('mouseout', () => { polyline.setOptions({ strokeWeight: 3, strokeOpacity: 0.9 }) })
-          newOverlays.push(polyline)
-          path.forEach(c => bounds.extend(c)); hasFeatures = true
-        }
-
-        const drawPolygon = (rings: any[]) => {
-          if (!Array.isArray(rings)) return
-          const paths = rings.map((ring: any[]) => (Array.isArray(ring) ? ring : []).filter((c: any) => Array.isArray(c) && c.length >= 2).map((c: any) => ({ lat: Number(c[1]), lng: Number(c[0]) })))
-          if (!paths[0]?.length) return
-          const polygon = new google.maps.Polygon({ paths, strokeColor: color, strokeOpacity: 0.8, strokeWeight: 2, fillColor: color, fillOpacity: 0.2, map })
-          polygon.addListener('click', (e: any) => showInfo(e.latLng))
-          newOverlays.push(polygon)
-          paths.flat().forEach(c => bounds.extend(c)); hasFeatures = true
-        }
-
-        const drawGeometry = (g: any) => {
-          if (!g || !g.type) return
-          const coords = g.coordinates
-          if (g.type === 'Point' && coords) drawPoint(coords)
-          else if (g.type === 'MultiPoint' && Array.isArray(coords)) coords.forEach(drawPoint)
-          else if (g.type === 'LineString' && Array.isArray(coords)) drawLine(coords)
-          else if (g.type === 'MultiLineString' && Array.isArray(coords)) coords.forEach((l: any) => drawLine(l))
-          else if (g.type === 'Polygon' && Array.isArray(coords)) drawPolygon(coords)
-          else if (g.type === 'MultiPolygon' && Array.isArray(coords)) coords.forEach((p: any) => drawPolygon(p))
-          else if (g.type === 'GeometryCollection' && Array.isArray(g.geometries)) g.geometries.forEach(drawGeometry)
-        }
-
-        drawGeometry(geom)
+        queue.push({ feature, color, layerName: layer.name, geom, fName })
       }
     }
 
-    overlaysRef.current = newOverlays
-    if (hasFeatures && !bounds.isEmpty()) {
-      map.fitBounds(bounds, { top: 30, right: 30, bottom: 30, left: 30 })
+    const total = queue.length
+    let plotted = 0
+    onRenderProgressRef.current?.({ featuresPlotted: 0, featuresTotal: total })
+
+    const drawItem = (it: Item) => {
+      const { feature, color, layerName, geom, fName } = it
+
+      const showInfo = (pos: google.maps.LatLng | google.maps.LatLngLiteral) => {
+        info.setContent(featureInfoHtml(feature, color, layerName))
+        info.setPosition(pos)
+        info.open(map)
+        onFeatureClickRef.current?.(feature, color, layerName)
+      }
+
+      const drawPoint = (coord: any) => {
+        if (!Array.isArray(coord) || coord.length < 2 || isNaN(Number(coord[0])) || isNaN(Number(coord[1]))) return
+        const pos = { lat: Number(coord[1]), lng: Number(coord[0]) }
+        if (AdvMarker) {
+          const pin = makeCirclePin(color)
+          pin.title = fName || layerName
+          const marker = new AdvMarker({ position: pos, map, title: fName || layerName, content: pin })
+          marker.addListener('click', () => showInfo(pos))
+          newOverlays.push(marker)
+        } else {
+          const marker = new google.maps.Marker({
+            position: pos, map, title: fName || layerName,
+            icon: { path: google.maps.SymbolPath.CIRCLE, scale: 7, fillColor: color, fillOpacity: 0.95, strokeColor: '#fff', strokeWeight: 2 },
+          })
+          marker.addListener('click', () => showInfo(pos))
+          newOverlays.push(marker)
+        }
+        bounds.extend(pos); hasFeatures = true
+      }
+
+      const drawLine = (coords: any[]) => {
+        if (!Array.isArray(coords)) return
+        const path = coords.filter(c => Array.isArray(c) && c.length >= 2 && !isNaN(Number(c[0])) && !isNaN(Number(c[1]))).map(c => ({ lat: Number(c[1]), lng: Number(c[0]) }))
+        if (path.length < 2) return
+        const shadow = new google.maps.Polyline({ path, strokeColor: '#000000', strokeOpacity: 0.08, strokeWeight: 6, map })
+        newOverlays.push(shadow)
+        const polyline = new google.maps.Polyline({ path, strokeColor: color, strokeOpacity: 0.9, strokeWeight: 3, map })
+        polyline.addListener('click', (e: any) => showInfo(e.latLng))
+        polyline.addListener('mouseover', () => { polyline.setOptions({ strokeWeight: 5, strokeOpacity: 1 }) })
+        polyline.addListener('mouseout', () => { polyline.setOptions({ strokeWeight: 3, strokeOpacity: 0.9 }) })
+        newOverlays.push(polyline)
+        path.forEach(c => bounds.extend(c)); hasFeatures = true
+      }
+
+      const drawPolygon = (rings: any[]) => {
+        if (!Array.isArray(rings)) return
+        const paths = rings.map((ring: any[]) => (Array.isArray(ring) ? ring : []).filter((c: any) => Array.isArray(c) && c.length >= 2).map((c: any) => ({ lat: Number(c[1]), lng: Number(c[0]) })))
+        if (!paths[0]?.length) return
+        const polygon = new google.maps.Polygon({ paths, strokeColor: color, strokeOpacity: 0.8, strokeWeight: 2, fillColor: color, fillOpacity: 0.2, map })
+        polygon.addListener('click', (e: any) => showInfo(e.latLng))
+        newOverlays.push(polygon)
+        paths.flat().forEach(c => bounds.extend(c)); hasFeatures = true
+      }
+
+      const drawGeometry = (g: any) => {
+        if (!g || !g.type) return
+        const coords = g.coordinates
+        if (g.type === 'Point' && coords) drawPoint(coords)
+        else if (g.type === 'MultiPoint' && Array.isArray(coords)) coords.forEach(drawPoint)
+        else if (g.type === 'LineString' && Array.isArray(coords)) drawLine(coords)
+        else if (g.type === 'MultiLineString' && Array.isArray(coords)) coords.forEach((l: any) => drawLine(l))
+        else if (g.type === 'Polygon' && Array.isArray(coords)) drawPolygon(coords)
+        else if (g.type === 'MultiPolygon' && Array.isArray(coords)) coords.forEach((p: any) => drawPolygon(p))
+        else if (g.type === 'GeometryCollection' && Array.isArray(g.geometries)) g.geometries.forEach(drawGeometry)
+      }
+
+      drawGeometry(geom)
     }
-  }, [map, layers, onFeatureClick])
+
+    // Staged/batched render via rAF — gives the "features appearing" feel without killing FPS.
+    const FAST_CUTOFF = 4000 // above this, use larger batches for speed
+    const BATCH = total > FAST_CUTOFF ? 400 : Math.max(40, Math.floor(total / 30))
+    let cursor = 0
+
+    const tick = () => {
+      if (cancelToken.cancelled) return
+      const end = Math.min(cursor + BATCH, queue.length)
+      for (let i = cursor; i < end; i++) drawItem(queue[i])
+      cursor = end
+      plotted = cursor
+      onRenderProgressRef.current?.({ featuresPlotted: plotted, featuresTotal: total })
+
+      if (cursor < queue.length) {
+        requestAnimationFrame(tick)
+      } else {
+        overlaysRef.current = newOverlays
+        if (hasFeatures && !bounds.isEmpty() && !hasAutoFitted.current) {
+          map.fitBounds(bounds, { top: 30, right: 30, bottom: 30, left: 30 })
+          hasAutoFitted.current = true
+        }
+      }
+    }
+
+    if (queue.length === 0) {
+      overlaysRef.current = newOverlays
+      onRenderProgressRef.current?.({ featuresPlotted: 0, featuresTotal: 0 })
+    } else {
+      requestAnimationFrame(tick)
+    }
+
+    return () => { cancelToken.cancelled = true }
+  }, [map, layers, filter])
 
   // Zoom to selected feature from attribute table
   useEffect(() => {
     if (!map || !selectedFeature) return
     zoomMapToFeature(map, selectedFeature)
-    // Highlight the feature briefly
     if (highlightRef.current) { removeOverlay(highlightRef.current); highlightRef.current = null }
     const geom = selectedFeature.geometry
     if (!geom) return
@@ -243,7 +348,6 @@ function MyMapComponent({
     }
     const paths = walk(geom)
     if (geom.type === 'Point') {
-      // For points, draw a pulsing circle around it
       const c = (geom as GeoJSON.Point).coordinates
       const circle = new google.maps.Circle({ center: { lat: c[1], lng: c[0] }, radius: 200, strokeColor: '#2563eb', strokeWeight: 3, strokeOpacity: 0.8, fillColor: '#2563eb', fillOpacity: 0.15, map })
       highlightRef.current = circle as any
@@ -262,15 +366,19 @@ export default function MapComponent({
   layers,
   onFeatureClick,
   selectedFeature,
+  filter,
+  onRenderProgress,
 }: {
   layers: GeoLayer[]
   onFeatureClick?: (feature: GeoJSON.Feature, color: string, layerName: string) => void
   selectedFeature?: GeoJSON.Feature | null
+  filter?: MapFilter
+  onRenderProgress?: (p: RenderProgress) => void
 }) {
   const render = (status: Status) => {
     if (status === Status.LOADING) return <div className="flex h-full w-full items-center justify-center bg-slate-50"><div className="flex flex-col items-center gap-2"><svg className="h-6 w-6 animate-spin text-blue-600" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg><p className="text-xs text-slate-400">Loading map...</p></div></div>
     if (status === Status.FAILURE) return <div className="flex h-full w-full items-center justify-center bg-slate-50"><p className="text-xs text-red-500">Failed to load map</p></div>
-    return <MyMapComponent layers={layers} onFeatureClick={onFeatureClick} selectedFeature={selectedFeature} />
+    return <MyMapComponent layers={layers} onFeatureClick={onFeatureClick} selectedFeature={selectedFeature} filter={filter} onRenderProgress={onRenderProgress} />
   }
 
   return <Wrapper apiKey={process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY!} libraries={['marker']} render={render} />

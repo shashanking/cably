@@ -14,29 +14,53 @@ interface DashboardStats {
 }
 
 const STATUS_COLORS: Record<string, string> = {
-  active: '#059669',
-  planned: '#d97706',
+  active: '#10b981',
+  planned: '#f59e0b',
   decommissioned: '#64748b',
-  maintenance: '#2563eb',
+  maintenance: '#3b82f6',
   unknown: '#94a3b8',
 }
 
-const TYPE_COLORS = ['#2563EB', '#059669', '#d97706', '#dc2626', '#7c3aed', '#0891b2', '#ea580c', '#6366f1']
+const TYPE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#f97316', '#6366f1']
 
-function formatCurrency(value: number) {
-  return '$' + value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })
+function formatCompact(n: number) {
+  if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B'
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
+  return n.toLocaleString('en-US', { maximumFractionDigits: 0 })
 }
 
 function formatDate(dateStr: string) {
   return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
-const KPI_CARDS = [
-  { label: 'Total Assets', href: '/assets', color: '#2563EB', icon: '📡' },
-  { label: 'Total Datasets', href: '/upload', color: '#7c3aed', icon: '📂' },
-  { label: 'Network Length', href: '/insights', color: '#059669', icon: '📏' },
-  { label: 'Total Cost', href: '/insights', color: '#d97706', icon: '💰' },
-] as const
+function formatRelative(dateStr: string) {
+  const d = new Date(dateStr).getTime()
+  const diff = Date.now() - d
+  const days = Math.floor(diff / 86400000)
+  if (days === 0) return 'Today'
+  if (days === 1) return '1 day ago'
+  if (days < 30) return `${days} days ago`
+  if (days < 365) return `${Math.floor(days / 30)}mo ago`
+  return `${Math.floor(days / 365)}y ago`
+}
+
+function Icon({ path, className = 'w-4 h-4' }: { path: string; className?: string }) {
+  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" dangerouslySetInnerHTML={{ __html: path }} />
+}
+
+const ICONS = {
+  assets: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
+  dataset: '<path d="M3 5a2 2 0 012-2h4l2 2h6a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>',
+  length: '<path d="M3 6h18M3 18h18M7 6v12M17 6v12"/>',
+  cost: '<path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/>',
+  map: '<path d="M9 3l-6 3v15l6-3 6 3 6-3V3l-6 3-6-3z"/><path d="M9 3v15M15 6v15"/>',
+  upload: '<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/>',
+  vendors: '<path d="M3 21h18M3 10h18M5 6l7-3 7 3M4 10v11M20 10v11M8 14v3M12 14v3M16 14v3"/>',
+  insights: '<path d="M3 3v18h18M7 14l4-4 4 4 5-5"/>',
+  chip: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3"/>',
+  pulse: '<path d="M3 12h4l3-9 4 18 3-9h4"/>',
+}
 
 export default function DashboardPage() {
   const [stats, setStats] = useState<DashboardStats | null>(null)
@@ -45,19 +69,17 @@ export default function DashboardPage() {
   useEffect(() => {
     fetch('/api/dashboard/stats')
       .then(r => r.json())
-      .then(data => {
-        if (data && !data.error) setStats(data)
-      })
+      .then(data => { if (data && !data.error) setStats(data) })
       .catch(console.error)
       .finally(() => setLoading(false))
   }, [])
 
   if (loading) {
     return (
-      <div className="h-[calc(100vh-52px)] flex items-center justify-center bg-slate-50">
+      <div className="h-[calc(100vh-52px)] bg-[#0b1220] flex items-center justify-center">
         <div className="flex items-center gap-3">
-          <div className="h-6 w-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
-          <span className="text-sm text-slate-500">Loading dashboard...</span>
+          <div className="h-5 w-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+          <span className="text-sm text-blue-200/70 font-mono">Loading control center…</span>
         </div>
       </div>
     )
@@ -65,8 +87,8 @@ export default function DashboardPage() {
 
   if (!stats) {
     return (
-      <div className="h-[calc(100vh-52px)] flex items-center justify-center bg-slate-50">
-        <p className="text-sm text-slate-500">Failed to load dashboard data.</p>
+      <div className="h-[calc(100vh-52px)] bg-[#0b1220] flex items-center justify-center">
+        <p className="text-sm text-slate-400">Failed to load dashboard data.</p>
       </div>
     )
   }
@@ -76,218 +98,224 @@ export default function DashboardPage() {
   const maxTypeCount = typeEntries.length > 0 ? Math.max(...typeEntries.map(([, v]) => v)) : 1
   const maxStatusCount = statusEntries.length > 0 ? Math.max(...statusEntries.map(([, v]) => v)) : 1
 
-  const kpiValues = [
-    stats.totalAssets.toLocaleString(),
-    stats.totalDatasets.toLocaleString(),
-    `${stats.totalLengthKm.toLocaleString('en-US', { maximumFractionDigits: 1 })} km`,
-    formatCurrency(stats.totalCost),
+  const kpis = [
+    { label: 'Total Assets', value: stats.totalAssets.toLocaleString(), sub: `${typeEntries.length} types`, icon: ICONS.assets, href: '/assets', trend: 'up', accent: 'from-blue-500 to-cyan-400' },
+    { label: 'Datasets', value: stats.totalDatasets.toLocaleString(), sub: 'ingested files', icon: ICONS.dataset, href: '/upload', trend: 'flat', accent: 'from-violet-500 to-fuchsia-400' },
+    { label: 'Network Length', value: `${formatCompact(stats.totalLengthKm)} km`, sub: 'route mileage', icon: ICONS.length, href: '/insights', trend: 'up', accent: 'from-emerald-500 to-teal-400' },
+    { label: 'Capex Tracked', value: `$${formatCompact(stats.totalCost)}`, sub: 'aggregated cost', icon: ICONS.cost, href: '/insights', trend: 'up', accent: 'from-amber-500 to-orange-400' },
   ]
 
   return (
-    <div className="h-[calc(100vh-52px)] overflow-y-auto bg-slate-50">
-      <div className="mx-auto max-w-6xl p-6">
-        {/* Welcome / Intro Section */}
-        <div className="mb-6">
-          <h1 className="text-2xl font-bold text-slate-900">Welcome to Cably</h1>
-          <p className="text-sm text-slate-500 mt-1 max-w-2xl">
-            Your centralized telecom network intelligence platform. Upload KML/KMZ files, manage vendors, track costs, and visualize your fiber infrastructure.
-          </p>
+    <div className="h-[calc(100vh-52px)] overflow-y-auto bg-[#0b1220] text-slate-100">
+      {/* Grid background */}
+      <div className="fixed inset-0 pointer-events-none opacity-[0.04]" style={{
+        backgroundImage: 'linear-gradient(rgba(96,165,250,.6) 1px, transparent 1px), linear-gradient(90deg, rgba(96,165,250,.6) 1px, transparent 1px)',
+        backgroundSize: '60px 60px',
+      }} />
+
+      <div className="relative mx-auto max-w-7xl px-6 py-6">
+        {/* Title strip */}
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-[10px] font-bold tracking-[0.25em] text-blue-300/60 uppercase">Mission Control</span>
+              <span className="w-1 h-1 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="text-[10px] font-mono text-emerald-300/80">LIVE</span>
+            </div>
+            <h1 className="text-2xl font-semibold text-white tracking-tight">Network Command</h1>
+            <p className="text-sm text-slate-400 mt-0.5">Real-time telemetry across your fiber, transport, and site infrastructure.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Link href="/upload" className="h-9 px-4 rounded-lg border border-white/10 bg-white/[0.04] hover:bg-white/[0.08] text-sm font-medium text-slate-200 flex items-center gap-2 transition-colors">
+              <Icon path={ICONS.upload} className="w-4 h-4" />Ingest
+            </Link>
+            <Link href="/" className="h-9 px-4 rounded-lg bg-gradient-to-br from-blue-500 to-cyan-500 text-white text-sm font-semibold flex items-center gap-2 shadow-lg shadow-blue-500/20 hover:shadow-blue-500/40 transition-all">
+              <Icon path={ICONS.map} className="w-4 h-4" />Open Map
+            </Link>
+          </div>
         </div>
 
-        {/* Getting Started Banner (shown when no assets) */}
-        {stats.totalAssets === 0 && (
-          <div className="mb-6 rounded-xl border border-blue-200 bg-blue-50 p-5">
-            <h2 className="text-sm font-semibold text-blue-800 mb-3 flex items-center gap-2">
-              <span className="inline-flex items-center justify-center h-5 w-5 rounded-full bg-blue-600 text-white text-xs font-bold">i</span>
-              Getting Started
-            </h2>
-            <ol className="list-decimal list-inside space-y-1.5 text-sm text-blue-700">
-              <li>Upload your network data (KML/KMZ/CSV)</li>
-              <li>Add vendors in Vendor Management</li>
-              <li>Link vendors to assets and set costs</li>
-              <li>View your network on the interactive map</li>
-            </ol>
-          </div>
-        )}
-
         {/* KPI Cards */}
-        <div className="grid gap-4 sm:grid-cols-4 mb-6">
-          {KPI_CARDS.map((c, i) => (
-            <Link
-              key={c.label}
-              href={c.href}
-              className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm hover:shadow-md hover:border-slate-300 transition-all no-underline block"
-            >
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-lg">{c.icon}</span>
-                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{c.label}</p>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 mb-6">
+          {kpis.map(k => (
+            <Link key={k.label} href={k.href} className="group relative rounded-xl border border-white/10 bg-white/[0.03] p-4 hover:bg-white/[0.06] hover:border-white/20 transition-all overflow-hidden">
+              <div className={`absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r ${k.accent} opacity-60 group-hover:opacity-100 transition-opacity`} />
+              <div className="flex items-start justify-between mb-3">
+                <div className={`w-9 h-9 rounded-lg bg-gradient-to-br ${k.accent} bg-opacity-20 flex items-center justify-center text-white shadow-md`}>
+                  <Icon path={k.icon} className="w-4 h-4" />
+                </div>
+                <div className="text-[9px] font-mono tracking-wider text-slate-500 uppercase">{k.trend === 'up' ? '↗︎ 24h' : '— 24h'}</div>
               </div>
-              <p className="text-3xl font-bold font-mono" style={{ color: c.color }}>{kpiValues[i]}</p>
+              <div className="text-[10px] font-bold tracking-[0.2em] text-slate-400 uppercase mb-1">{k.label}</div>
+              <div className="text-2xl font-semibold text-white font-mono tracking-tight tabular-nums">{k.value}</div>
+              <div className="text-[11px] text-slate-500 mt-0.5">{k.sub}</div>
             </Link>
           ))}
         </div>
 
+        {/* Getting started banner (only when empty) */}
+        {stats.totalAssets === 0 && (
+          <div className="mb-6 rounded-xl border border-blue-400/20 bg-blue-500/5 p-5">
+            <div className="flex items-start gap-3">
+              <div className="w-8 h-8 rounded-lg bg-blue-500/20 flex items-center justify-center text-blue-300 shrink-0">
+                <Icon path={ICONS.upload} className="w-4 h-4" />
+              </div>
+              <div className="flex-1">
+                <h2 className="text-sm font-semibold text-blue-100 mb-1">No telemetry yet</h2>
+                <p className="text-xs text-blue-200/70 mb-3">Ingest a KML/KMZ/GeoJSON/CSV to begin. Everything below populates automatically.</p>
+                <div className="flex gap-2">
+                  <Link href="/upload" className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-blue-500 text-white text-xs font-semibold hover:bg-blue-400 transition-colors">Upload data</Link>
+                  <Link href="/vendors" className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-white/10 text-xs font-medium text-slate-300 hover:bg-white/5">Add vendors</Link>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Charts Row */}
-        <div className="grid gap-6 lg:grid-cols-2 mb-6">
-          {/* Assets by Type */}
-          <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="text-sm font-semibold text-slate-800 mb-1 flex items-center gap-2">
-              <span>🏷️</span> Assets by Type
-            </h2>
-            <p className="text-xs text-slate-400 mb-4">
-              Distribution of network assets across infrastructure categories (e.g. fiber, conduit, splice point).
-            </p>
+        <div className="grid gap-3 lg:grid-cols-2 mb-6">
+          <Panel title="Asset Composition" sub="By infrastructure type" icon={ICONS.chip} accent="#3b82f6">
             {typeEntries.length === 0 ? (
-              <p className="py-6 text-center text-sm text-slate-400">No data yet</p>
+              <EmptyChart label="No type data" />
             ) : (
-              <div className="space-y-3">
-                {typeEntries.map(([type, count], i) => {
+              <div className="space-y-2.5">
+                {typeEntries.slice(0, 8).map(([type, count], i) => {
                   const pct = maxTypeCount > 0 ? (count / maxTypeCount) * 100 : 0
                   const color = TYPE_COLORS[i % TYPE_COLORS.length]
+                  const share = stats.totalAssets > 0 ? ((count / stats.totalAssets) * 100).toFixed(1) : '0'
                   return (
-                    <div key={type} className="flex items-center gap-3">
-                      <span className="text-xs text-slate-600 font-medium w-36 truncate text-right shrink-0">{type}</span>
-                      <div className="flex-1 h-6 bg-slate-100 rounded-md overflow-hidden">
-                        <div
-                          className="h-full rounded-md transition-all duration-700 flex items-center justify-end pr-2"
-                          style={{ width: `${Math.max(pct, 8)}%`, backgroundColor: color }}
-                        >
-                          <span className="text-[10px] font-bold text-white drop-shadow-sm">{count}</span>
+                    <div key={type} className="group">
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: color }} />
+                          <span className="text-xs text-slate-300 truncate font-medium">{type}</span>
                         </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="text-[10px] font-mono text-slate-500">{share}%</span>
+                          <span className="text-xs font-mono text-white font-semibold w-12 text-right tabular-nums">{count.toLocaleString()}</span>
+                        </div>
+                      </div>
+                      <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">
+                        <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pct}%`, background: `linear-gradient(90deg, ${color}aa, ${color})` }} />
                       </div>
                     </div>
                   )
                 })}
               </div>
             )}
-          </div>
+          </Panel>
 
-          {/* Assets by Status */}
-          <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="text-sm font-semibold text-slate-800 mb-1 flex items-center gap-2">
-              <span>📊</span> Assets by Status
-            </h2>
-            <p className="text-xs text-slate-400 mb-4">
-              Current operational status of all assets -- active, planned, under maintenance, or decommissioned.
-            </p>
+          <Panel title="Operational Status" sub="Lifecycle distribution" icon={ICONS.pulse} accent="#10b981">
             {statusEntries.length === 0 ? (
-              <p className="py-6 text-center text-sm text-slate-400">No data yet</p>
+              <EmptyChart label="No status data" />
             ) : (
-              <div className="space-y-3">
+              <div className="space-y-2.5">
                 {statusEntries.map(([status, count]) => {
                   const pct = maxStatusCount > 0 ? (count / maxStatusCount) * 100 : 0
                   const color = STATUS_COLORS[status] || STATUS_COLORS.unknown
+                  const share = stats.totalAssets > 0 ? ((count / stats.totalAssets) * 100).toFixed(1) : '0'
                   return (
-                    <div key={status} className="flex items-center gap-3">
-                      <span className="text-xs text-slate-600 font-medium w-36 truncate text-right shrink-0 capitalize">{status}</span>
-                      <div className="flex-1 h-6 bg-slate-100 rounded-md overflow-hidden">
-                        <div
-                          className="h-full rounded-md transition-all duration-700 flex items-center justify-end pr-2"
-                          style={{ width: `${Math.max(pct, 8)}%`, backgroundColor: color }}
-                        >
-                          <span className="text-[10px] font-bold text-white drop-shadow-sm">{count}</span>
+                    <div key={status}>
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color, boxShadow: `0 0 8px ${color}80` }} />
+                          <span className="text-xs text-slate-300 font-medium capitalize">{status}</span>
                         </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-mono text-slate-500">{share}%</span>
+                          <span className="text-xs font-mono text-white font-semibold w-12 text-right tabular-nums">{count.toLocaleString()}</span>
+                        </div>
+                      </div>
+                      <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">
+                        <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pct}%`, background: `linear-gradient(90deg, ${color}aa, ${color})` }} />
                       </div>
                     </div>
                   )
                 })}
               </div>
             )}
-          </div>
+          </Panel>
         </div>
 
-        {/* Recent Uploads */}
-        <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden mb-6">
-          <div className="px-5 py-4 border-b border-slate-100">
-            <h2 className="text-sm font-semibold text-slate-800 flex items-center gap-2">
-              <span>📤</span> Recent Uploads
-            </h2>
+        {/* Recent uploads & quick links */}
+        <div className="grid gap-3 lg:grid-cols-3 mb-6">
+          <div className="lg:col-span-2">
+            <Panel title="Recent Ingests" sub="Last 5 datasets" icon={ICONS.dataset} accent="#8b5cf6">
+              {stats.recentDatasets.length === 0 ? (
+                <EmptyChart label="Nothing ingested yet" />
+              ) : (
+                <div className="divide-y divide-white/5 -mx-4 -mb-2">
+                  {stats.recentDatasets.map(ds => (
+                    <div key={ds.id} className="flex items-center gap-3 px-4 py-2.5">
+                      <div className="w-8 h-8 rounded-md bg-violet-500/10 border border-violet-400/20 flex items-center justify-center text-violet-300 shrink-0">
+                        <Icon path={ICONS.dataset} className="w-3.5 h-3.5" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs font-medium text-slate-200 truncate">{ds.name}</div>
+                        <div className="text-[10px] text-slate-500 font-mono">{formatDate(ds.created_at)} · {formatRelative(ds.created_at)}</div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className="text-xs font-mono font-semibold text-white tabular-nums">{ds.feature_count.toLocaleString()}</div>
+                        <div className="text-[9px] text-slate-500 uppercase tracking-wider">features</div>
+                      </div>
+                      <Link href="/" className="ml-2 text-[11px] font-semibold text-blue-400 hover:text-blue-300 shrink-0">Open →</Link>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Panel>
           </div>
-          {stats.recentDatasets.length === 0 ? (
-            <div className="text-center py-10">
-              <p className="text-sm text-slate-400">No datasets uploaded yet.</p>
+
+          <Panel title="Quick Routes" sub="Jump to modules" icon={ICONS.pulse} accent="#f59e0b">
+            <div className="space-y-2">
+              {[
+                { href: '/', label: 'Map Explorer', desc: 'Visualize fiber routes', icon: ICONS.map },
+                { href: '/assets', label: 'Asset Registry', desc: 'Edit, vendor, cost', icon: ICONS.assets },
+                { href: '/vendors', label: 'Vendor Hub', desc: 'Suppliers & contracts', icon: ICONS.vendors },
+                { href: '/insights', label: 'Insights', desc: 'Capex & health', icon: ICONS.insights },
+              ].map(l => (
+                <Link key={l.href} href={l.href} className="flex items-center gap-3 rounded-lg border border-white/5 bg-white/[0.02] hover:bg-white/[0.06] px-3 py-2.5 transition-colors">
+                  <div className="w-8 h-8 rounded-md bg-white/5 flex items-center justify-center text-slate-300 shrink-0">
+                    <Icon path={l.icon} className="w-3.5 h-3.5" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs font-semibold text-white">{l.label}</div>
+                    <div className="text-[10px] text-slate-500">{l.desc}</div>
+                  </div>
+                  <svg className="w-3.5 h-3.5 text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+                </Link>
+              ))}
             </div>
-          ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-slate-100 bg-slate-50/50">
-                  <th className="text-left px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">Dataset Name</th>
-                  <th className="text-right px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">Features</th>
-                  <th className="text-right px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">Date</th>
-                  <th className="text-right px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {stats.recentDatasets.map(ds => (
-                  <tr key={ds.id} className="hover:bg-slate-50/50 transition-colors">
-                    <td className="px-5 py-3 font-medium text-slate-900">{ds.name}</td>
-                    <td className="px-5 py-3 text-right font-mono text-slate-600">{ds.feature_count}</td>
-                    <td className="px-5 py-3 text-right text-slate-500">{formatDate(ds.created_at)}</td>
-                    <td className="px-5 py-3 text-right">
-                      <Link
-                        href="/"
-                        className="text-xs font-medium text-blue-600 hover:text-blue-800 no-underline hover:underline"
-                      >
-                        View on Map
-                      </Link>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+          </Panel>
         </div>
 
-        {/* Quick Links */}
-        <div className="mb-6">
-          <h2 className="text-sm font-semibold text-slate-800 mb-3 flex items-center gap-2">
-            <span>⚡</span> Quick Links
-          </h2>
-          <div className="grid gap-4 sm:grid-cols-4">
-            {[
-              { href: '/', label: 'Map', desc: 'Visualize your network infrastructure on an interactive map', icon: '🗺️', color: 'bg-blue-50 text-blue-700 border-blue-200' },
-              { href: '/upload', label: 'Upload', desc: 'Import KML, KMZ, GeoJSON, or CSV files', icon: '📤', color: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
-              { href: '/vendors', label: 'Vendors', desc: 'Manage vendor relationships and costs', icon: '🏢', color: 'bg-violet-50 text-violet-700 border-violet-200' },
-              { href: '/insights', label: 'Insights', desc: 'Analyze network distribution and trends', icon: '📊', color: 'bg-amber-50 text-amber-700 border-amber-200' },
-            ].map(link => (
-              <Link
-                key={link.href}
-                href={link.href}
-                className={`rounded-xl border p-4 shadow-sm hover:shadow-md transition-all no-underline ${link.color}`}
-              >
-                <span className="text-2xl block mb-2">{link.icon}</span>
-                <p className="text-sm font-semibold">{link.label}</p>
-                <p className="text-xs opacity-70 mt-0.5">{link.desc}</p>
-              </Link>
-            ))}
-          </div>
-        </div>
-
-        {/* Need Help Section */}
-        <div className="mb-6 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="text-sm font-semibold text-slate-800 mb-3 flex items-center gap-2">
-            <span>💡</span> Need help?
-          </h2>
-          <ul className="space-y-2 text-sm text-slate-600">
-            <li className="flex items-start gap-2">
-              <span className="text-slate-400 mt-0.5 shrink-0">--</span>
-              <span>Upload <strong>KML, KMZ, GeoJSON, or CSV</strong> files from the <Link href="/upload" className="text-blue-600 hover:underline">Upload</Link> page to get started.</span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="text-slate-400 mt-0.5 shrink-0">--</span>
-              <span>Add and manage your vendors on the <Link href="/vendors" className="text-blue-600 hover:underline">Vendors</Link> page, then link them to assets for cost tracking.</span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="text-slate-400 mt-0.5 shrink-0">--</span>
-              <span>Use the <Link href="/" className="text-blue-600 hover:underline">Map</Link> to visually explore your fiber routes, splice points, and other infrastructure.</span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="text-slate-400 mt-0.5 shrink-0">--</span>
-              <span>Head to <Link href="/insights" className="text-blue-600 hover:underline">Insights</Link> for analytics on asset distribution, network length, and cost breakdowns.</span>
-            </li>
-          </ul>
+        {/* Footer */}
+        <div className="text-[10px] text-slate-600 font-mono text-center py-2">
+          Cably Telecom GIS · Build {new Date().getFullYear()} · {stats.totalAssets.toLocaleString()} features indexed
         </div>
       </div>
     </div>
   )
+}
+
+function Panel({ title, sub, icon, accent, children }: { title: string; sub?: string; icon: string; accent: string; children: React.ReactNode }) {
+  return (
+    <div className="relative rounded-xl border border-white/10 bg-white/[0.03] overflow-hidden">
+      <div className="absolute top-0 left-0 right-0 h-[1.5px] opacity-60" style={{ background: `linear-gradient(90deg, ${accent}, transparent)` }} />
+      <div className="px-4 py-3 border-b border-white/5 flex items-center gap-2.5">
+        <div className="w-7 h-7 rounded-md bg-white/5 flex items-center justify-center" style={{ color: accent }}>
+          <Icon path={icon} className="w-3.5 h-3.5" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-semibold text-white">{title}</div>
+          {sub && <div className="text-[10px] text-slate-500 tracking-wider uppercase">{sub}</div>}
+        </div>
+      </div>
+      <div className="p-4">{children}</div>
+    </div>
+  )
+}
+
+function EmptyChart({ label }: { label: string }) {
+  return <div className="py-6 text-center text-xs text-slate-500">{label}</div>
 }

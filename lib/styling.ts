@@ -65,8 +65,22 @@ export function getStatusValue(p: any): string | null {
   return p?.Status || p?.construction_status || p?.stage || null
 }
 
+const OWNER_KEY_PATTERNS = [
+  /^owner$/i, /^owned_?by$/i, /^owning[_\s]?(company|org|entity)$/i,
+  /^ownership$/i, /^own(er)?[_\s]?name$/i, /^owner_?org(anization)?$/i,
+  /^maintained[_\s]?by$/i, /^maintainer$/i, /^operator$/i, /^operated[_\s]?by$/i,
+  /^carrier$/i, /^provider$/i, /^company$/i, /^org(anization)?$/i, /^proprietor$/i,
+]
+
 export function getOwnerValue(p: any): string | null {
-  return p?.owner || p?.maintainedby || null
+  if (!p || typeof p !== 'object') return null
+  for (const key of Object.keys(p)) {
+    if (OWNER_KEY_PATTERNS.some(r => r.test(key))) {
+      const v = p[key]
+      if (v != null && v !== '') return String(v).trim()
+    }
+  }
+  return null
 }
 
 export function getPlacementValue(p: any): string | null {
