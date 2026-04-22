@@ -132,6 +132,8 @@ export default function DashboardPage() {
   const [hiddenFacilities, setHiddenFacilities] = useState<Set<string>>(new Set())
   const [colorMode, setColorMode] = useState<ColorMode>('layer')
   const [filterOpen, setFilterOpen] = useState(false)
+  const [mapCollapsed, setMapCollapsed] = useState(false)
+  const [mapFullscreen, setMapFullscreen] = useState(false)
 
   // Splash synchronisation — stay up until dashboard aggregation + assets land
   usePageLoading('dashboard-summary', !data && !err, 'Loading dashboard summary…')
@@ -476,8 +478,8 @@ export default function DashboardPage() {
           {/* LEFT COLUMN */}
           <div className="col-span-12 lg:col-span-3 space-y-3">
             <Card title="Network Composition" accent="#8b5cf6">
-              <div className="h-[180px] relative">
-                <ResponsiveContainer>
+              <div className="h-[180px] w-full relative">
+                <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
                     <Pie
                       data={composition}
@@ -520,8 +522,8 @@ export default function DashboardPage() {
             </Card>
 
             <Card title="Vendor Cost Comparison (Annual)" accent="#3b82f6">
-              <div className="h-[220px]">
-                <ResponsiveContainer>
+              <div className="h-[220px] w-full">
+                <ResponsiveContainer width="100%" height="100%">
                   <BarChart
                     data={filteredVendorCosts.map(v => ({ ...v, cost: Math.round(v.cost) }))}
                     layout="vertical"
@@ -581,17 +583,25 @@ export default function DashboardPage() {
                 gradient={['#10b981', '#047857']} />
             </div>
 
-            {/* Map card with toolbar */}
-            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
-              <div className="h-1 bg-gradient-to-r from-blue-500 via-cyan-400 to-emerald-400" />
+            {/* Map card with toolbar — collapsable + fullscreen */}
+            <div className={
+              mapFullscreen
+                ? 'fixed inset-0 z-[2000] bg-white flex flex-col'
+                : 'bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm'
+            }>
+              {!mapFullscreen && <div className="h-1 bg-gradient-to-r from-blue-500 via-cyan-400 to-emerald-400" />}
               <div className="px-4 py-2.5 border-b border-slate-100 flex items-center justify-between gap-3 flex-wrap">
                 <div className="flex items-center gap-2">
                   <div className="w-1.5 h-4 rounded-sm bg-gradient-to-b from-blue-500 to-cyan-400" />
                   <div className="text-sm font-semibold text-slate-800">Network Map & Visualization</div>
+                  {mapCollapsed && !mapFullscreen && (
+                    <span className="text-[10px] text-slate-400 ml-1">(collapsed)</span>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-2">
                   {/* Map-panel filters button */}
+                  {!mapCollapsed && (
                   <button
                     onClick={() => setFilterOpen(o => !o)}
                     className={`px-2.5 py-1 rounded-md text-[11px] font-semibold flex items-center gap-1.5 transition shadow-sm ${
@@ -610,8 +620,10 @@ export default function DashboardPage() {
                       </span>
                     )}
                   </button>
+                  )}
 
                   {/* Route type pills */}
+                  {!mapCollapsed && (
                   <div className="flex gap-1 bg-slate-100 rounded-md p-0.5 text-[11px]">
                     {([
                       { k: 'all', label: 'All Routes', from: '#3b82f6', to: '#6366f1' },
@@ -631,10 +643,46 @@ export default function DashboardPage() {
                       </button>
                     ))}
                   </div>
+                  )}
+
+                  {/* Window controls: collapse + fullscreen */}
+                  <div className="flex items-center gap-1 pl-1 border-l border-slate-200 ml-1">
+                    <button
+                      onClick={() => setMapCollapsed(c => !c)}
+                      disabled={mapFullscreen}
+                      title={mapCollapsed ? 'Expand map' : 'Collapse map'}
+                      className="w-7 h-7 rounded-md text-slate-500 hover:bg-slate-100 disabled:opacity-30 flex items-center justify-center"
+                    >
+                      {mapCollapsed ? (
+                        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6" /></svg>
+                      ) : (
+                        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M18 15l-6-6-6 6" /></svg>
+                      )}
+                    </button>
+                    <button
+                      onClick={() => { setMapFullscreen(f => !f); if (!mapFullscreen) setMapCollapsed(false) }}
+                      title={mapFullscreen ? 'Exit fullscreen' : 'Fullscreen map'}
+                      className="w-7 h-7 rounded-md text-slate-500 hover:bg-slate-100 flex items-center justify-center"
+                    >
+                      {mapFullscreen ? (
+                        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M9 9L4 4M9 9V4M9 9H4M15 9l5-5M15 9V4M15 9h5M9 15l-5 5M9 15v5M9 15H4M15 15l5 5M15 15v5M15 15h5" />
+                        </svg>
+                      ) : (
+                        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M4 8V4h4M20 8V4h-4M4 16v4h4M20 16v4h-4" />
+                        </svg>
+                      )}
+                    </button>
+                  </div>
                 </div>
               </div>
 
-              <div className="h-[440px] relative">
+              <div className={
+                mapFullscreen ? 'flex-1 relative'
+                  : mapCollapsed ? 'hidden'
+                  : 'h-[440px] relative'
+              }>
                 <ArcGISMap layers={filteredLayers} filter={mapFilter} />
 
                 {/* Filter dropdown overlay */}

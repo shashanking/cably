@@ -224,22 +224,28 @@ export default function ArcGISMap({
         if (cancelled) { view.destroy(); return }
 
         view.on('click', async (evt: any) => {
+          // Always close any existing popup first. ArcGIS v5's openPopup
+          // silently no-ops when a popup is already open, so subsequent
+          // feature clicks would appear to do nothing without this.
+          try { view.closePopup() } catch {}
           const hit = await view.hitTest(evt, { include: [featureLayer] })
           const graphicHit = hit.results.find((r: any) => r.type === 'graphic' && r.graphic)
           const g = graphicHit ? (graphicHit as any).graphic : null
           if (!g) return
           const info = graphicIndexRef.current.get(g)
           if (!info) return
-          // If the parent provided a click handler, let it render its own UI.
-          // Otherwise fall back to the ArcGIS native popup so users still see info.
           if (onFeatureClickRef.current) {
+            // Parent owns the UI — ensure native popup stays closed.
             onFeatureClickRef.current(info.feature, info.color, info.layerName)
           } else {
-            view.openPopup({
-              title: (info.feature.properties as any)?.name || (info.feature.properties as any)?.Name || 'Feature',
-              content: popupContentHtml(info.feature, info.color, info.layerName),
-              location: evt.mapPoint,
-            })
+            // Give the popup a tick to fully unmount before re-opening
+            setTimeout(() => {
+              view.openPopup({
+                title: (info.feature.properties as any)?.name || (info.feature.properties as any)?.Name || 'Feature',
+                content: popupContentHtml(info.feature, info.color, info.layerName),
+                location: evt.mapPoint,
+              })
+            }, 0)
           }
         })
 

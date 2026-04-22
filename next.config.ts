@@ -8,8 +8,8 @@ const nextConfig: NextConfig = {
     optimizePackageImports: ['@arcgis/core', '@turf/turf'],
   },
 
-  // Skip type-check + lint on Vercel (they run separately in CI/IDE).
-  eslint: { ignoreDuringBuilds: true },
+  // Skip type-check on Vercel (runs separately in the IDE). Next 16 removed
+  // the `eslint` config key — ESLint no longer runs during `next build`.
   typescript: { ignoreBuildErrors: true },
 
   // Silence noisy dev-only overlays in prod

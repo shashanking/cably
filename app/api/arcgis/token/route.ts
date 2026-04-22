@@ -6,6 +6,10 @@ export const dynamic = 'force-dynamic'
 const OAUTH_URL = 'https://www.arcgis.com/sharing/rest/oauth2/token'
 
 let cached: { token: string; expiresAt: number } | null = null
+// Dedupe concurrent mint requests. Dev HMR / page burst can hit this route
+// from multiple components at once while cache is empty, each triggering a
+// separate OAuth round-trip — ArcGIS rate-limits and we get sporadic 500s.
+let inflight: Promise<{ token: string; expiresAt: number }> | null = null
 
 async function mintToken(): Promise<{ token: string; expiresAt: number }> {
   const clientId = process.env.ARCGIS_CLIENT_ID
@@ -44,7 +48,10 @@ async function mintToken(): Promise<{ token: string; expiresAt: number }> {
 export async function GET() {
   try {
     if (!cached || Date.now() >= cached.expiresAt) {
-      cached = await mintToken()
+      if (!inflight) {
+        inflight = mintToken().finally(() => { inflight = null })
+      }
+      cached = await inflight
     }
     return NextResponse.json({
       token: cached.token,
@@ -53,6 +60,7 @@ export async function GET() {
     })
   } catch (err: any) {
     cached = null
+    console.error('[arcgis/token]', err)
     return NextResponse.json({ error: err.message || 'token_failed' }, { status: 500 })
   }
 }
