@@ -128,6 +128,8 @@ export default function DashboardPage() {
   // Map-panel filters
   const [hiddenVendors, setHiddenVendors] = useState<Set<string>>(new Set())
   const [hiddenOwners, setHiddenOwners] = useState<Set<string>>(new Set())
+  const [hiddenGroups, setHiddenGroups] = useState<Set<string>>(new Set())
+  const [hiddenFacilities, setHiddenFacilities] = useState<Set<string>>(new Set())
   const [colorMode, setColorMode] = useState<ColorMode>('layer')
   const [filterOpen, setFilterOpen] = useState(false)
 
@@ -207,11 +209,15 @@ export default function DashboardPage() {
     return m
   }, [vendors])
 
-  // Derive vendor + owner facets from loaded assets
+  // Derive vendor + owner + group + facility facets from loaded assets.
+  // Owner = explicit property match first; if none, fall back to the vendor
+  // name — which is the operator/owner in most telecom GIS datasets.
   const facets = useMemo(() => {
     const vMap = new Map<string, { id: string; name: string; count: number }>()
     const oMap = new Map<string, number>()
-    let noVendor = 0, noOwner = 0
+    const gMap = new Map<string, number>()
+    const fMap = new Map<string, number>()
+    let noVendor = 0, noOwner = 0, noGroup = 0, noFacility = 0
     for (const a of assets) {
       const vid = a.vendor_id
       if (vid != null) {
@@ -220,14 +226,23 @@ export default function DashboardPage() {
         v.count++
         vMap.set(k, v)
       } else noVendor++
-      const owner = getOwnerValue(a.properties)
+      let owner = getOwnerValue(a.properties)
+      if (!owner && vid != null) owner = vendorNameMap[vid] || null
       if (owner) oMap.set(owner, (oMap.get(owner) || 0) + 1)
       else noOwner++
+      const group = a.properties?.Group || a.properties?.group || null
+      if (group) gMap.set(group, (gMap.get(group) || 0) + 1)
+      else noGroup++
+      const facility = a.properties?.Facility || a.properties?.facility || null
+      if (facility) fMap.set(facility, (fMap.get(facility) || 0) + 1)
+      else noFacility++
     }
     return {
       vendors: Array.from(vMap.values()).sort((a, b) => b.count - a.count),
       owners: Array.from(oMap.entries()).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
-      noVendor, noOwner,
+      groups: Array.from(gMap.entries()).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
+      facilities: Array.from(fMap.entries()).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
+      noVendor, noOwner, noGroup, noFacility,
     }
   }, [assets, vendorNameMap])
 
@@ -243,8 +258,9 @@ export default function DashboardPage() {
   }, [facets])
 
   const mapFilter: MapFilter = useMemo(() => ({
-    hiddenVendors, hiddenOwners, vendorColorMap, ownerColorMap, colorMode,
-  }), [hiddenVendors, hiddenOwners, vendorColorMap, ownerColorMap, colorMode])
+    hiddenVendors, hiddenOwners, hiddenGroups, hiddenFacilities,
+    vendorColorMap, ownerColorMap, colorMode,
+  }), [hiddenVendors, hiddenOwners, hiddenGroups, hiddenFacilities, vendorColorMap, ownerColorMap, colorMode])
 
   // Apply route pill — show the selected category + all facility layers,
   // hide everything else. Facilities are always visible so POPs/DCs still render.
@@ -282,7 +298,7 @@ export default function DashboardPage() {
     })
   }, [data, hiddenVendors, facets.vendors])
 
-  const activeFilterCount = hiddenVendors.size + hiddenOwners.size
+  const activeFilterCount = hiddenVendors.size + hiddenOwners.size + hiddenGroups.size + hiddenFacilities.size
 
   // Recompute KPIs / composition / bottom-strip stats from the filtered asset set.
   // Falls back to server aggregation while assets are still loading.
@@ -291,9 +307,14 @@ export default function DashboardPage() {
     const filtered = assets.filter(a => {
       const vkey = a.vendor_id != null ? String(a.vendor_id) : '__none__'
       if (hiddenVendors.has(vkey)) return false
-      const owner = getOwnerValue(a.properties)
+      let owner = getOwnerValue(a.properties)
+      if (!owner && a.vendor_id != null) owner = vendorNameMap[a.vendor_id] || null
       const okey = owner || '__none__'
       if (hiddenOwners.has(okey)) return false
+      const gkey = a.properties?.Group || a.properties?.group || '__none__'
+      if (hiddenGroups.size > 0 && hiddenGroups.has(gkey)) return false
+      const fkey = a.properties?.Facility || a.properties?.facility || '__none__'
+      if (hiddenFacilities.size > 0 && hiddenFacilities.has(fkey)) return false
       // Route pill filter
       if (routeFilter !== 'all') {
         const cat = classifyAsset(a, datasetNameById)
@@ -346,7 +367,7 @@ export default function DashboardPage() {
       leasedPct,
       popsCount,
     }
-  }, [assets, data, hiddenVendors, hiddenOwners, routeFilter, datasetNameById])
+  }, [assets, data, hiddenVendors, hiddenOwners, hiddenGroups, hiddenFacilities, routeFilter, datasetNameById, vendorNameMap])
 
   function toggleVendor(id: string) {
     setHiddenVendors(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
@@ -354,8 +375,16 @@ export default function DashboardPage() {
   function toggleOwner(name: string) {
     setHiddenOwners(s => { const n = new Set(s); n.has(name) ? n.delete(name) : n.add(name); return n })
   }
+  function toggleGroup(name: string) {
+    setHiddenGroups(s => { const n = new Set(s); n.has(name) ? n.delete(name) : n.add(name); return n })
+  }
+  function toggleFacility(name: string) {
+    setHiddenFacilities(s => { const n = new Set(s); n.has(name) ? n.delete(name) : n.add(name); return n })
+  }
   function clearAllFilters() {
-    setHiddenVendors(new Set()); setHiddenOwners(new Set()); setColorMode('layer')
+    setHiddenVendors(new Set()); setHiddenOwners(new Set())
+    setHiddenGroups(new Set()); setHiddenFacilities(new Set())
+    setColorMode('layer')
   }
 
   if (err) {
@@ -706,6 +735,62 @@ export default function DashboardPage() {
                           )}
                         </div>
                       </div>
+
+                      {/* Groups */}
+                      {(facets.groups.length > 0 || facets.noGroup > 0) && (
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <div className="text-[9px] uppercase tracking-wider text-slate-500 font-semibold">
+                              Group ({facets.groups.length})
+                            </div>
+                            {hiddenGroups.size > 0 && (
+                              <button onClick={() => setHiddenGroups(new Set())} className="text-[10px] text-blue-600 hover:text-blue-800">Clear</button>
+                            )}
+                          </div>
+                          <div className="space-y-0.5 max-h-32 overflow-y-auto border border-slate-100 rounded-md p-1">
+                            {facets.groups.slice(0, 40).map(g => {
+                              const hidden = hiddenGroups.has(g.name)
+                              return (
+                                <label key={g.name} className="flex items-center gap-2 py-0.5 px-1.5 rounded hover:bg-slate-50 cursor-pointer">
+                                  <input type="checkbox" checked={!hidden} onChange={() => toggleGroup(g.name)}
+                                         className="rounded border-slate-300 text-blue-600 focus:ring-blue-500" />
+                                  <span className="w-2 h-2 rounded-sm shrink-0 bg-sky-500" />
+                                  <span className={`flex-1 truncate ${hidden ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{g.name}</span>
+                                  <span className="text-[9px] text-slate-400 font-mono tabular-nums">{g.count}</span>
+                                </label>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Facilities */}
+                      {(facets.facilities.length > 0 || facets.noFacility > 0) && (
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <div className="text-[9px] uppercase tracking-wider text-slate-500 font-semibold">
+                              Facility ({facets.facilities.length})
+                            </div>
+                            {hiddenFacilities.size > 0 && (
+                              <button onClick={() => setHiddenFacilities(new Set())} className="text-[10px] text-blue-600 hover:text-blue-800">Clear</button>
+                            )}
+                          </div>
+                          <div className="space-y-0.5 max-h-32 overflow-y-auto border border-slate-100 rounded-md p-1">
+                            {facets.facilities.slice(0, 60).map(f => {
+                              const hidden = hiddenFacilities.has(f.name)
+                              return (
+                                <label key={f.name} className="flex items-center gap-2 py-0.5 px-1.5 rounded hover:bg-slate-50 cursor-pointer">
+                                  <input type="checkbox" checked={!hidden} onChange={() => toggleFacility(f.name)}
+                                         className="rounded border-slate-300 text-blue-600 focus:ring-blue-500" />
+                                  <span className="w-2 h-2 rounded-sm shrink-0 bg-orange-500" />
+                                  <span className={`flex-1 truncate ${hidden ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{f.name}</span>
+                                  <span className="text-[9px] text-slate-400 font-mono tabular-nums">{f.count}</span>
+                                </label>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      )}
 
                       <div className="text-[10px] text-slate-400 leading-snug pt-1 border-t border-slate-100">
                         Filters apply to the map and every KPI, chart and panel on this page. Plan & budget values are not affected.

@@ -65,19 +65,38 @@ export function getStatusValue(p: any): string | null {
   return p?.Status || p?.construction_status || p?.stage || null
 }
 
+// Lenient patterns — match anywhere in the key name, not just at the start.
+// Picks up real-world KML/GIS field names like `OwnerCo`, `maintained_by`,
+// `Carrier_ASN`, `OperatorName`, `group`, `parentCo`, etc.
 const OWNER_KEY_PATTERNS = [
-  /^owner$/i, /^owned_?by$/i, /^owning[_\s]?(company|org|entity)$/i,
-  /^ownership$/i, /^own(er)?[_\s]?name$/i, /^owner_?org(anization)?$/i,
-  /^maintained[_\s]?by$/i, /^maintainer$/i, /^operator$/i, /^operated[_\s]?by$/i,
-  /^carrier$/i, /^provider$/i, /^company$/i, /^org(anization)?$/i, /^proprietor$/i,
+  /owner/i, /owned[_\s-]?by/i, /owning[_\s-]?(company|org|entity)/i,
+  /ownership/i, /owner[_\s-]?name/i, /owner[_\s-]?org/i, /proprietor/i,
+  /maintained[_\s-]?by/i, /maintainer/i,
+  /operator/i, /operated[_\s-]?by/i,
+  /carrier/i, /provider/i, /\bisp\b/i,
+  /^company$/i, /^parent[_\s-]?co/i,
+  /^org(anization)?$/i, /\basn\b/i, /^as[_-]?\d+/i,
+  /^group$/i,
+]
+
+// Keys we should NEVER treat as owner even if they superficially match.
+const OWNER_KEY_IGNORE = [
+  /color/i, /stroke/i, /fill/i, /opacity/i, /icon/i, /style/i,
+  /^name$/i, /^group[_\s-]?id$/i,
 ]
 
 export function getOwnerValue(p: any): string | null {
   if (!p || typeof p !== 'object') return null
   for (const key of Object.keys(p)) {
+    if (OWNER_KEY_IGNORE.some(r => r.test(key))) continue
     if (OWNER_KEY_PATTERNS.some(r => r.test(key))) {
       const v = p[key]
-      if (v != null && v !== '') return String(v).trim()
+      if (v == null || v === '' || typeof v === 'object') continue
+      const str = String(v).trim()
+      if (!str) continue
+      // Skip meaningless sentinel values
+      if (/^(none|n\/a|null|unknown|not[\s_]present|tbd|-+)$/i.test(str)) continue
+      return str
     }
   }
   return null

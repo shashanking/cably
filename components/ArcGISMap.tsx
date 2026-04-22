@@ -18,6 +18,8 @@ export interface GeoLayer {
 export interface MapFilter {
   hiddenVendors?: Set<string>
   hiddenOwners?: Set<string>
+  hiddenGroups?: Set<string>
+  hiddenFacilities?: Set<string>
   vendorColorMap?: Record<string, string>
   ownerColorMap?: Record<string, string>
   colorMode?: 'layer' | 'vendor' | 'owner'
@@ -263,15 +265,15 @@ export default function ArcGISMap({
   // Basemap switcher — only applies when no WebMap is active (WebMap brings its own basemap)
   useEffect(() => {
     const view = viewRef.current
-    if (!view || !readyRef.current) return
+    if (!view || status !== 'ready') return
     if (webmapItemId) return
     try { view.map.basemap = basemap as any } catch {}
-  }, [basemap, webmapItemId])
+  }, [basemap, webmapItemId, status])
 
   // WebMap swap: when an AGOL Web Map ID is set, replace view.map with that WebMap.
   // Cably's feature + highlight layers and any overlay feature layers are re-attached on top.
   useEffect(() => {
-    if (!readyRef.current) return
+    if (status !== 'ready') return
     const view = viewRef.current
     if (!view) return
 
@@ -307,11 +309,11 @@ export default function ArcGISMap({
       }
     })()
     return () => { cancelled = true }
-  }, [webmapItemId])
+  }, [webmapItemId, status])
 
   // Overlay diff: add/remove FeatureLayers from AGOL items
   useEffect(() => {
-    if (!readyRef.current) return
+    if (status !== 'ready') return
     const view = viewRef.current
     if (!view) return
 
@@ -344,11 +346,11 @@ export default function ArcGISMap({
       }
     })()
     return () => { cancelled = true }
-  }, [overlayItems])
+  }, [overlayItems, status])
 
   // Render Cably features whenever layers / filter change
   useEffect(() => {
-    if (!readyRef.current) return
+    if (status !== 'ready') return
     const view = viewRef.current
     const featureLayer = featureLayerRef.current
     if (!view || !featureLayer) return
@@ -368,6 +370,8 @@ export default function ArcGISMap({
       const queue: Item[] = []
       const hiddenVendors = filter?.hiddenVendors
       const hiddenOwners = filter?.hiddenOwners
+      const hiddenGroups = filter?.hiddenGroups
+      const hiddenFacilities = filter?.hiddenFacilities
       const vendorColorMap = filter?.vendorColorMap
       const ownerColorMap = filter?.ownerColorMap
       const colorMode = filter?.colorMode || 'layer'
@@ -383,6 +387,11 @@ export default function ArcGISMap({
           if (hiddenVendors && hiddenVendors.size > 0 && hiddenVendors.has(vid ?? '__none__')) continue
           const owner = getOwnerValue(feature.properties) || null
           if (hiddenOwners && hiddenOwners.size > 0 && hiddenOwners.has(owner ?? '__none__')) continue
+          const props = feature.properties as any
+          const group = props?.Group || props?.group || null
+          if (hiddenGroups && hiddenGroups.size > 0 && hiddenGroups.has(group ?? '__none__')) continue
+          const facility = props?.Facility || props?.facility || null
+          if (hiddenFacilities && hiddenFacilities.size > 0 && hiddenFacilities.has(facility ?? '__none__')) continue
           const raw = ((feature.properties as any)?._color || (feature.properties as any)?.__color) as string | undefined
           let color = (raw && !isWashedOut(raw)) ? raw : layer.color
           if (colorMode === 'vendor' && vendorColorMap) color = vendorColorMap[vid ?? '__none__'] || '#94a3b8'
@@ -442,11 +451,11 @@ export default function ArcGISMap({
         } catch {}
       }
     })()
-  }, [layers, filter])
+  }, [layers, filter, status])
 
   // Highlight the selected feature
   useEffect(() => {
-    if (!readyRef.current) return
+    if (status !== 'ready') return
     const highlightLayer = highlightLayerRef.current
     if (!highlightLayer) return
     ;(async () => {
@@ -465,7 +474,7 @@ export default function ArcGISMap({
         highlightLayer.add(new Graphic({ geometry: piece.esriGeom, symbol }))
       }
     })()
-  }, [selectedFeature])
+  }, [selectedFeature, status])
 
   // Resolve an AGOL item ID by querying the portal, then load as WebMap or overlay.
   async function loadAgolItem() {
