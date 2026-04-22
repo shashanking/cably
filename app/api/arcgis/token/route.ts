@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 
 export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'
 
 const OAUTH_URL = 'https://www.arcgis.com/sharing/rest/oauth2/token'
 

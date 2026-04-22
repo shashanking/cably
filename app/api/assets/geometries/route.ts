@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '../../../../lib/supabase'
 
 export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'
 
 // GET /api/assets/geometries?ids=1,2,3
 // Returns only id + geometry + name + type for the given asset IDs.

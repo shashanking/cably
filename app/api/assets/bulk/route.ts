@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '../../../../lib/supabase'
 
 export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'
 
 // PATCH /api/assets/bulk
 // Body: { ids: number[], vendor_id?: number | null, status?: string, cost_per_km?: number }

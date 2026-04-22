@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { supabase } from '../../../../lib/supabase'
 
 export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'
 
 type AssetRow = {
   id: number

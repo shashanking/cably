@@ -3,6 +3,7 @@ import { supabase } from '../../../lib/supabase'
 import tokml from 'tokml'
 
 export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'
 
 async function fetchAllForExport() {
   const PAGE = 1000

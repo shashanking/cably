@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '../../../../lib/supabase'
 
 export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'
 
 const SLIM_COLS = 'id, dataset_id, type, name, status, vendor_id, cost_per_km, total_cost, length_km, operational_status, utilization_pct, capacity_pct, region, installed_year, properties'
 

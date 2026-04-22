@@ -6,6 +6,7 @@ import JSZip from 'jszip'
 import { geomLengthKm } from '../../../lib/geo'
 
 export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'
 export const maxDuration = 120
 
 async function extractKmlFromKmz(buf: ArrayBuffer): Promise<string> {

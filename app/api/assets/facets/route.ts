@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { supabase } from '../../../../lib/supabase'
 
 export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'
 
 // Pulls distinct filter-friendly facets across the WHOLE assets table
 // (vs. just the first page) — used by the Fill page's filter dropdowns.
