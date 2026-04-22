@@ -179,7 +179,7 @@ export default function InsightsPage() {
         <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4 text-[11px] text-slate-400 flex items-center justify-between flex-wrap gap-2">
           <div>Need more context? Cross-reference with the map or drill into an asset.</div>
           <div className="flex gap-3">
-            <Link href="/" className="text-blue-400 hover:text-blue-300 font-medium">Open Map →</Link>
+            <Link href="/map" className="text-blue-400 hover:text-blue-300 font-medium">Open Map →</Link>
             <Link href="/assets" className="text-blue-400 hover:text-blue-300 font-medium">Asset Registry →</Link>
             <Link href="/vendors" className="text-blue-400 hover:text-blue-300 font-medium">Vendor Hub →</Link>
           </div>

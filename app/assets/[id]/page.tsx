@@ -16,10 +16,18 @@ interface Asset {
   cost_per_km: number | null
   total_cost: number | null
   length_km: number | null
+  operational_status: string | null
+  utilization_pct: number | null
+  capacity_pct: number | null
+  region: string | null
+  installed_year: number | null
   dataset_id: number | null
   created_at: string
   updated_at: string
 }
+
+const OPERATIONAL_STATUSES = ['online', 'offline', 'warning']
+const REGIONS = ['West', 'Southwest', 'Midwest', 'Southeast', 'Northeast']
 
 interface Vendor {
   id: number
@@ -65,6 +73,11 @@ export default function AssetDetailPage() {
     cost_per_km: '',
     total_cost: '',
     length_km: '',
+    operational_status: '',
+    utilization_pct: '',
+    capacity_pct: '',
+    region: '',
+    installed_year: '',
   })
 
   const fetchAsset = useCallback(async () => {
@@ -82,6 +95,11 @@ export default function AssetDetailPage() {
         cost_per_km: data.cost_per_km != null ? String(data.cost_per_km) : '',
         total_cost: data.total_cost != null ? String(data.total_cost) : '',
         length_km: data.length_km != null ? String(data.length_km) : '',
+        operational_status: data.operational_status ?? '',
+        utilization_pct: data.utilization_pct != null ? String(data.utilization_pct) : '',
+        capacity_pct: data.capacity_pct != null ? String(data.capacity_pct) : '',
+        region: data.region ?? '',
+        installed_year: data.installed_year != null ? String(data.installed_year) : '',
       })
     } catch (err) {
       console.error('Failed to fetch asset:', err)
@@ -127,6 +145,11 @@ export default function AssetDetailPage() {
         cost_per_km: form.cost_per_km ? Number(form.cost_per_km) : null,
         total_cost: form.total_cost ? Number(form.total_cost) : null,
         length_km: form.length_km ? Number(form.length_km) : null,
+        operational_status: form.operational_status || null,
+        utilization_pct: form.utilization_pct !== '' ? Number(form.utilization_pct) : null,
+        capacity_pct: form.capacity_pct !== '' ? Number(form.capacity_pct) : null,
+        region: form.region || null,
+        installed_year: form.installed_year !== '' ? Number(form.installed_year) : null,
       }
 
       const res = await fetch(`/api/assets/${id}`, {
@@ -371,6 +394,70 @@ export default function AssetDetailPage() {
                   onChange={e => setForm(f => ({ ...f, length_km: e.target.value }))}
                   className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
                   placeholder="0.000"
+                />
+              </div>
+
+              {/* Operational Status */}
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1.5">Operational Status</label>
+                <select
+                  value={form.operational_status}
+                  onChange={e => setForm(f => ({ ...f, operational_status: e.target.value }))}
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 bg-white focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                >
+                  <option value="">—</option>
+                  {OPERATIONAL_STATUSES.map(s => (
+                    <option key={s} value={s} className="capitalize">{s}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Utilization % */}
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1.5">Utilization (%)</label>
+                <input
+                  type="number" step="0.1" min="0" max="100"
+                  value={form.utilization_pct}
+                  onChange={e => setForm(f => ({ ...f, utilization_pct: e.target.value }))}
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                  placeholder="0 – 100"
+                />
+              </div>
+
+              {/* Capacity % */}
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1.5">Capacity (%)</label>
+                <input
+                  type="number" step="0.1" min="0" max="100"
+                  value={form.capacity_pct}
+                  onChange={e => setForm(f => ({ ...f, capacity_pct: e.target.value }))}
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                  placeholder="0 – 100"
+                />
+              </div>
+
+              {/* Region */}
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1.5">Region</label>
+                <select
+                  value={form.region}
+                  onChange={e => setForm(f => ({ ...f, region: e.target.value }))}
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 bg-white focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                >
+                  <option value="">—</option>
+                  {REGIONS.map(r => <option key={r} value={r}>{r}</option>)}
+                </select>
+              </div>
+
+              {/* Installed Year */}
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1.5">Installed Year</label>
+                <input
+                  type="number" step="1" min="1900" max="2100"
+                  value={form.installed_year}
+                  onChange={e => setForm(f => ({ ...f, installed_year: e.target.value }))}
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                  placeholder="e.g. 2022"
                 />
               </div>
             </div>

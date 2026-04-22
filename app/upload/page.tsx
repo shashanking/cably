@@ -25,7 +25,7 @@ export default function UploadPage() {
                 <li><strong>KML/KMZ files</strong> — Export from QGIS, Google Earth, or other GIS tools. Folders become separate layers.</li>
                 <li><strong>GeoJSON</strong> — Standard geospatial format from web mapping tools.</li>
                 <li><strong>CSV</strong> — Must include <code className="bg-blue-100 px-1 rounded">latitude</code> and <code className="bg-blue-100 px-1 rounded">longitude</code> columns for point data.</li>
-                <li>After upload, go to the <Link href="/" className="font-medium underline">Map</Link> to load and visualize your datasets.</li>
+                <li>After upload, go to the <Link href="/map" className="font-medium underline">Map</Link> to load and visualize your datasets.</li>
               </ul>
             </div>
           </div>
@@ -53,7 +53,7 @@ export default function UploadPage() {
 
         {/* After upload actions */}
         <div className="mt-6 grid gap-4 sm:grid-cols-3">
-          <Link href="/" className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-5 py-4 shadow-sm hover:border-blue-300 hover:bg-blue-50/30 transition-colors no-underline group">
+          <Link href="/map" className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-5 py-4 shadow-sm hover:border-blue-300 hover:bg-blue-50/30 transition-colors no-underline group">
             <span className="text-2xl group-hover:scale-110 transition-transform">🗺️</span>
             <div>
               <p className="text-sm font-semibold text-slate-800">View on Map</p>

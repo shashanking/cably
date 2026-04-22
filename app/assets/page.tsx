@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
+import { usePageLoading } from '../../components/LoadingContext'
 
 const PAGE_SIZE = 200
 
@@ -38,6 +39,8 @@ export default function AssetsPage() {
   const [bulkApplying, setBulkApplying] = useState(false)
   const [total, setTotal] = useState(0)
   const [loadingMore, setLoadingMore] = useState(false)
+
+  usePageLoading('assets-list', loading, 'Loading assets…')
 
   const loadPage = useCallback(async (offset: number, replace = false) => {
     const res = await fetch(`/api/assets?limit=${PAGE_SIZE}&offset=${offset}${offset === 0 ? '&count=true' : ''}`)
@@ -186,7 +189,10 @@ export default function AssetsPage() {
             </p>
           </div>
           <div className="flex gap-2">
-            <Link href="/" className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 shadow-sm no-underline">
+            <Link href="/assets/fill" className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-amber-500 to-orange-500 px-4 py-2 text-sm font-semibold text-white hover:from-amber-600 hover:to-orange-600 shadow-sm no-underline">
+              ⚠ Fill Data Gaps
+            </Link>
+            <Link href="/map" className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 shadow-sm no-underline">
               View on Map
             </Link>
             <Link href="/upload" className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 shadow-sm no-underline">+ Add Asset</Link>

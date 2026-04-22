@@ -48,6 +48,8 @@ export async function PUT(
     const allowedFields = [
       'name', 'type', 'status', 'vendor_id',
       'cost_per_km', 'total_cost', 'length_km',
+      'operational_status', 'utilization_pct', 'capacity_pct',
+      'region', 'installed_year',
       'properties', 'geometry',
     ]
 

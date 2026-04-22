@@ -1,13 +1,24 @@
 'use client'
 
 import { useEffect, useState, useRef } from 'react'
+import { useLoadingContext } from './LoadingContext'
+
+const DEFAULT_STATUS = 'Initializing Geospatial Engine...'
+const MIN_DURATION_MS = 900       // splash stays up at least this long (avoid flash)
+const BOOT_MS = 500               // reach ~30% over this window before listening for tasks
+const TASK_GRACE_MS = 400         // after mount, wait this long for a page to register a task
+const MAX_DURATION_MS = 10000     // fallback: force dismiss even if a task never resolves
 
 export default function SplashScreen({ onComplete }: { onComplete: () => void }) {
+  const ctx = useLoadingContext()
   const [progress, setProgress] = useState(0)
-  const [status, setStatus] = useState('Initializing Geospatial Engine...')
+  const [status, setStatus] = useState(DEFAULT_STATUS)
   const [fadeOut, setFadeOut] = useState(false)
   const [particlesReady, setParticlesReady] = useState(false)
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const startedAtRef = useRef(Date.now())
+  const dismissingRef = useRef(false)
+  const progressRef = useRef(0)
 
   // Particle network animation
   useEffect(() => {
@@ -69,31 +80,66 @@ export default function SplashScreen({ onComplete }: { onComplete: () => void })
     return () => { cancelAnimationFrame(raf); window.removeEventListener('resize', resize) }
   }, [])
 
-  // Progress animation
+  // Smart event-driven progress — reads page loading tasks from LoadingContext.
+  // Phases: boot → wait → done. Progress is lerped toward a target each frame.
   useEffect(() => {
-    const steps = [
-      { at: 12, text: 'Loading map kernel...' },
-      { at: 28, text: 'Connecting to Supabase...' },
-      { at: 45, text: 'Preparing visualization layer...' },
-      { at: 62, text: 'Calibrating network topology...' },
-      { at: 80, text: 'Rendering geospatial engine...' },
-      { at: 95, text: 'Finalizing interface...' },
-      { at: 100, text: 'System Ready' },
-    ]
-    let frame: number, start: number | null = null
-    const duration = 2200
+    let frame: number
+    const tick = () => {
+      if (dismissingRef.current) return
+      const elapsed = Date.now() - startedAtRef.current
+      const tasks = ctx?.tasks || []
+      const pending = tasks.length
 
-    const tick = (ts: number) => {
-      if (!start) start = ts
-      const pct = Math.min(100, Math.round((ts - start) / duration * 100))
-      setProgress(pct)
-      for (let i = steps.length - 1; i >= 0; i--) { if (pct >= steps[i].at) { setStatus(steps[i].text); break } }
-      if (pct < 100) { frame = requestAnimationFrame(tick) }
-      else { setTimeout(() => { setFadeOut(true); setTimeout(onComplete, 600) }, 300) }
+      // Decide target progress and label
+      let target: number
+      let label = DEFAULT_STATUS
+      const latest = tasks[tasks.length - 1]
+      const hardTimeout = elapsed > MAX_DURATION_MS
+
+      if (elapsed < BOOT_MS) {
+        // Boot: 0 → 30 linear
+        target = (elapsed / BOOT_MS) * 30
+        label = DEFAULT_STATUS
+      } else if (!hardTimeout && (pending > 0 || (elapsed - BOOT_MS) < TASK_GRACE_MS)) {
+        // Wait: creep toward 88 but never exceed it while tasks are pending
+        const waitElapsed = Math.max(0, elapsed - BOOT_MS)
+        target = Math.min(88, 30 + (waitElapsed / 2500) * 58)
+        label = latest ? latest.label : 'Preparing…'
+      } else {
+        // Done (tasks cleared past grace, OR min duration reached, OR hard timeout)
+        target = 100
+        label = 'System Ready'
+      }
+
+      // Respect minimum splash duration before allowing 100%
+      if (target >= 100 && elapsed < MIN_DURATION_MS) {
+        target = 92 + (elapsed / MIN_DURATION_MS) * 8
+        label = latest ? latest.label : 'Almost ready…'
+      }
+
+      // Smooth lerp toward target
+      const next = progressRef.current + (target - progressRef.current) * 0.18
+      progressRef.current = next
+      setProgress(Math.round(next))
+      setStatus(label)
+
+      if (target >= 100 && Math.abs(next - 100) < 0.6 && elapsed >= MIN_DURATION_MS) {
+        dismissingRef.current = true
+        setProgress(100)
+        setTimeout(() => {
+          setFadeOut(true)
+          setTimeout(onComplete, 600)
+        }, 180)
+        return
+      }
+      frame = requestAnimationFrame(tick)
     }
     frame = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(frame)
-  }, [onComplete])
+    // We intentionally ignore ctx?.tasks from deps — the rAF loop reads the
+    // latest `ctx` closure each tick via the stable reference.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctx, onComplete])
 
   return (
     <div className={`fixed inset-0 z-[99999] transition-all duration-600 ${fadeOut ? 'opacity-0 scale-105 pointer-events-none' : 'opacity-100 scale-100'}`} style={{ background: 'linear-gradient(135deg, #f8fafc 0%, #eef2ff 50%, #f0fdf4 100%)' }}>

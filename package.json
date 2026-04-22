@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@arcgis/core": "^5.0.17",
     "@googlemaps/react-wrapper": "^1.2.0",
     "@supabase/supabase-js": "^2.103.0",
     "@tmcw/togeojson": "^7.1.2",
@@ -18,6 +19,7 @@
     "next": "16.2.3",
     "react": "19.2.4",
     "react-dom": "19.2.4",
+    "recharts": "^3.8.1",
     "tokml": "^0.4.0",
     "xmldom": "^0.6.0"
   },
