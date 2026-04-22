@@ -1,18 +1,16 @@
 import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
-  // @arcgis/core ships as ESM with ~1,500 submodules. `optimizePackageImports`
-  // tells Next/Turbopack to only bundle the specific submodules we actually
-  // import at runtime (via `await import(...)`), not the entire graph.
+  // Other heavy packages we tree-shake. @arcgis/core is NOT bundled at all —
+  // it's loaded from Esri's CDN at runtime via window.require() in ArcGISMap.
   experimental: {
-    optimizePackageImports: ['@arcgis/core', '@turf/turf'],
+    optimizePackageImports: ['@turf/turf'],
   },
 
   // Skip type-check on Vercel (runs separately in the IDE). Next 16 removed
   // the `eslint` config key — ESLint no longer runs during `next build`.
   typescript: { ignoreBuildErrors: true },
 
-  // Silence noisy dev-only overlays in prod
   productionBrowserSourceMaps: false,
 }
 

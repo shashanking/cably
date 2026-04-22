@@ -1,7 +1,7 @@
 import type { Metadata } from 'next'
+import Script from 'next/script'
 import { Geist, Geist_Mono } from 'next/font/google'
 import './globals.css'
-import '@arcgis/core/assets/esri/themes/light/main.css'
 import AppShell from '../components/AppShell'
 
 const geistSans = Geist({
@@ -26,6 +26,13 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
+      <head>
+        {/* ArcGIS Maps SDK — loaded from Esri's CDN so the ~1,500-module
+            package never hits Next/Turbopack bundling. Dojo AMD loader
+            exposes window.require() which ArcGISMap.tsx uses. */}
+        <link rel="stylesheet" href="https://js.arcgis.com/4.32/esri/themes/light/main.css" />
+        <Script src="https://js.arcgis.com/4.32/" strategy="beforeInteractive" />
+      </head>
       <body className="min-h-full bg-[var(--bg)] text-[var(--tx)]">
         <AppShell>{children}</AppShell>
       </body>

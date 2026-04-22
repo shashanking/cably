@@ -3,6 +3,29 @@
 import { useEffect, useRef, useState } from 'react'
 import { getOwnerValue } from '../lib/styling'
 
+// ── ArcGIS via CDN Dojo loader ─────────────────────────────────────────────
+// The SDK is loaded as a <script> tag in app/layout.tsx rather than bundled,
+// which keeps Next/Turbopack builds fast and memory-bounded. window.require()
+// is the AMD loader the SDK exposes; we wrap it in a Promise-returning helper.
+declare global {
+  interface Window { require?: (modules: string[], cb: (...m: any[]) => void, err?: (e: Error) => void) => void }
+}
+
+async function amdRequire<T = any>(modulePath: string): Promise<{ default: T }> {
+  return new Promise((resolve, reject) => {
+    const attempt = (retriesLeft: number) => {
+      if (typeof window === 'undefined') { reject(new Error('SSR')); return }
+      if (!window.require) {
+        if (retriesLeft <= 0) { reject(new Error('ArcGIS CDN script did not load')); return }
+        setTimeout(() => attempt(retriesLeft - 1), 100)
+        return
+      }
+      window.require([modulePath], (mod: T) => resolve({ default: mod }), (e: Error) => reject(e))
+    }
+    attempt(80) // up to ~8 seconds
+  })
+}
+
 export interface GeoLayer {
   id: string
   name: string
@@ -183,11 +206,11 @@ export default function ArcGISMap({
           { default: GraphicsLayer },
           { default: esriId },
         ] = await Promise.all([
-          import('@arcgis/core/config'),
-          import('@arcgis/core/Map'),
-          import('@arcgis/core/views/MapView'),
-          import('@arcgis/core/layers/GraphicsLayer'),
-          import('@arcgis/core/identity/IdentityManager'),
+          amdRequire<any>('esri/config'),
+          amdRequire<any>('esri/Map'),
+          amdRequire<any>('esri/views/MapView'),
+          amdRequire<any>('esri/layers/GraphicsLayer'),
+          amdRequire<any>('esri/identity/IdentityManager'),
         ])
         if (cancelled) return
 
@@ -287,7 +310,7 @@ export default function ArcGISMap({
     ;(async () => {
       try {
         if (webmapItemId) {
-          const { default: WebMap } = await import('@arcgis/core/WebMap')
+          const { default: WebMap } = await amdRequire<any>('esri/WebMap')
           const wm = new WebMap({ portalItem: { id: webmapItemId } })
           await wm.loadAll()
           if (cancelled) return
@@ -301,7 +324,7 @@ export default function ArcGISMap({
             if (vp) view.viewpoint = vp
           } catch {}
         } else {
-          const { default: EsriMap } = await import('@arcgis/core/Map')
+          const { default: EsriMap } = await amdRequire<any>('esri/Map')
           const m = new EsriMap({ basemap })
           if (featureLayerRef.current) m.add(featureLayerRef.current)
           if (highlightLayerRef.current) m.add(highlightLayerRef.current)
@@ -325,7 +348,7 @@ export default function ArcGISMap({
 
     let cancelled = false
     ;(async () => {
-      const { default: FeatureLayer } = await import('@arcgis/core/layers/FeatureLayer')
+      const { default: FeatureLayer } = await amdRequire<any>('esri/layers/FeatureLayer')
       if (cancelled) return
 
       const wanted = new Set(overlayItems.map(o => o.id))
@@ -366,7 +389,7 @@ export default function ArcGISMap({
     renderCancelRef.current = cancelToken
 
     ;(async () => {
-      const { default: Graphic } = await import('@arcgis/core/Graphic')
+      const { default: Graphic } = await amdRequire<any>('esri/Graphic')
       if (cancelToken.cancelled) return
 
       featureLayer.removeAll()
@@ -449,7 +472,7 @@ export default function ArcGISMap({
       if (cancelToken.cancelled) return
       if (!hasAutoFittedRef.current && !webmapItemId && bbox[0] !== Infinity) {
         try {
-          const { default: Extent } = await import('@arcgis/core/geometry/Extent')
+          const { default: Extent } = await amdRequire<any>('esri/geometry/Extent')
           if (cancelToken.cancelled) return
           const extent = new Extent({ xmin: bbox[0], ymin: bbox[1], xmax: bbox[2], ymax: bbox[3], spatialReference: { wkid: 4326 } })
           view.goTo(extent.expand(1.2)).catch(() => {})
@@ -467,7 +490,7 @@ export default function ArcGISMap({
     ;(async () => {
       highlightLayer.removeAll()
       if (!selectedFeature?.geometry) return
-      const { default: Graphic } = await import('@arcgis/core/Graphic')
+      const { default: Graphic } = await amdRequire<any>('esri/Graphic')
       for (const piece of explodeGeom(selectedFeature.geometry)) {
         let symbol: any
         if (piece.kind === 'point') {

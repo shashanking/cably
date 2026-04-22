@@ -9,7 +9,6 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "@arcgis/core": "^5.0.17",
     "@googlemaps/react-wrapper": "^1.2.0",
     "@supabase/supabase-js": "^2.103.0",
     "@tmcw/togeojson": "^7.1.2",
