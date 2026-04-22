@@ -1,12 +1,14 @@
 import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
-  // @arcgis/core ships as ESM with ~1,500 submodules. Without explicit
-  // transpilation the prod bundler (Turbopack) stalls resolving them.
-  transpilePackages: ['@arcgis/core'],
+  // @arcgis/core ships as ESM with ~1,500 submodules. `optimizePackageImports`
+  // tells Next/Turbopack to only bundle the specific submodules we actually
+  // import at runtime (via `await import(...)`), not the entire graph.
+  experimental: {
+    optimizePackageImports: ['@arcgis/core', '@turf/turf'],
+  },
 
   // Skip type-check + lint on Vercel (they run separately in CI/IDE).
-  // Keeps the build fast and stops lint warnings from failing the build.
   eslint: { ignoreDuringBuilds: true },
   typescript: { ignoreBuildErrors: true },
 
