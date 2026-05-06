@@ -4,10 +4,10 @@ import { useEffect, useState, useRef } from 'react'
 import { useLoadingContext } from './LoadingContext'
 
 const DEFAULT_STATUS = 'Initializing Geospatial Engine...'
-const MIN_DURATION_MS = 900       // splash stays up at least this long (avoid flash)
-const BOOT_MS = 500               // reach ~30% over this window before listening for tasks
-const TASK_GRACE_MS = 400         // after mount, wait this long for a page to register a task
-const MAX_DURATION_MS = 10000     // fallback: force dismiss even if a task never resolves
+const MIN_DURATION_MS = 180       // splash stays up at least this long (avoid flash)
+const BOOT_MS = 100               // reach ~30% over this window before listening for tasks
+const TASK_GRACE_MS = 60          // after mount, wait this long for a page to register a task
+const MAX_DURATION_MS = 4000      // fallback: force dismiss even if a task never resolves
 
 export default function SplashScreen({ onComplete }: { onComplete: () => void }) {
   const ctx = useLoadingContext()
@@ -103,7 +103,7 @@ export default function SplashScreen({ onComplete }: { onComplete: () => void })
       } else if (!hardTimeout && (pending > 0 || (elapsed - BOOT_MS) < TASK_GRACE_MS)) {
         // Wait: creep toward 88 but never exceed it while tasks are pending
         const waitElapsed = Math.max(0, elapsed - BOOT_MS)
-        target = Math.min(88, 30 + (waitElapsed / 2500) * 58)
+        target = Math.min(88, 30 + (waitElapsed / 400) * 58)
         label = latest ? latest.label : 'Preparing…'
       } else {
         // Done (tasks cleared past grace, OR min duration reached, OR hard timeout)
@@ -118,18 +118,18 @@ export default function SplashScreen({ onComplete }: { onComplete: () => void })
       }
 
       // Smooth lerp toward target
-      const next = progressRef.current + (target - progressRef.current) * 0.18
+      const next = progressRef.current + (target - progressRef.current) * 0.5
       progressRef.current = next
       setProgress(Math.round(next))
       setStatus(label)
 
-      if (target >= 100 && Math.abs(next - 100) < 0.6 && elapsed >= MIN_DURATION_MS) {
+      if (target >= 100 && Math.abs(next - 100) < 1 && elapsed >= MIN_DURATION_MS) {
         dismissingRef.current = true
         setProgress(100)
         setTimeout(() => {
           setFadeOut(true)
-          setTimeout(onComplete, 600)
-        }, 180)
+          setTimeout(onComplete, 180)
+        }, 30)
         return
       }
       frame = requestAnimationFrame(tick)
@@ -142,7 +142,7 @@ export default function SplashScreen({ onComplete }: { onComplete: () => void })
   }, [ctx, onComplete])
 
   return (
-    <div className={`fixed inset-0 z-[99999] transition-all duration-600 ${fadeOut ? 'opacity-0 scale-105 pointer-events-none' : 'opacity-100 scale-100'}`} style={{ background: 'linear-gradient(135deg, #f8fafc 0%, #eef2ff 50%, #f0fdf4 100%)' }}>
+    <div className={`fixed inset-0 z-[99999] transition-all duration-200 ${fadeOut ? 'opacity-0 scale-105 pointer-events-none' : 'opacity-100 scale-100'}`} style={{ background: 'linear-gradient(135deg, #f8fafc 0%, #eef2ff 50%, #f0fdf4 100%)' }}>
       {/* Particle canvas */}
       <canvas ref={canvasRef} className="absolute inset-0 z-0" />
 
