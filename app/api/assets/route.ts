@@ -5,25 +5,44 @@ export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 const SELECT_COLS = 'id, dataset_id, type, name, status, vendor_id, cost_per_km, total_cost, length_km, geometry, properties, created_at, updated_at'
+// Slimmer column set for the bulk/map path — drops timestamps & dataset_id (already filtered).
+const BULK_SELECT_COLS = 'id, type, name, status, vendor_id, cost_per_km, total_cost, length_km, geometry, properties'
+const PAGE = 1000
+const PARALLEL_PAGES = 6
 
 async function fetchAllAssets(datasetId?: number) {
-  const PAGE = 1000
-  let all: any[] = []
-  let from = 0
+  // Cheap HEAD count first so we can fan out page reads in parallel.
+  let countQuery = supabase.from('assets').select('id', { count: 'exact', head: true })
+  if (datasetId) countQuery = countQuery.eq('dataset_id', datasetId)
+  const { count, error: countError } = await countQuery
+  if (countError) { console.error('Supabase count error:', countError); return [] }
+  const total = count ?? 0
+  if (total === 0) return []
 
-  while (true) {
-    let query = supabase.from('assets').select(SELECT_COLS).range(from, from + PAGE - 1)
-    if (datasetId) query = query.eq('dataset_id', datasetId)
+  const pageCount = Math.ceil(total / PAGE)
+  const pages: any[][] = new Array(pageCount)
 
-    const { data, error } = await query
-    if (error) { console.error('Supabase error:', error); break }
-    if (!data || data.length === 0) break
-    all = all.concat(data)
-    if (data.length < PAGE) break
-    from += PAGE
+  // Worker pool — caps concurrency so we don't blast the connection.
+  let cursor = 0
+  async function worker() {
+    while (true) {
+      const i = cursor++
+      if (i >= pageCount) return
+      const from = i * PAGE
+      const to = Math.min(from + PAGE - 1, total - 1)
+      let q = supabase
+        .from('assets')
+        .select(BULK_SELECT_COLS)
+        .order('id', { ascending: true })
+        .range(from, to)
+      if (datasetId) q = q.eq('dataset_id', datasetId)
+      const { data, error } = await q
+      if (error) { console.error(`Supabase page ${i} error:`, error); pages[i] = []; continue }
+      pages[i] = data || []
+    }
   }
-
-  return all
+  await Promise.all(Array.from({ length: Math.min(PARALLEL_PAGES, pageCount) }, worker))
+  return pages.flat()
 }
 
 async function fetchPage(datasetId: number | undefined, offset: number, limit: number, wantCount: boolean) {
@@ -58,7 +77,9 @@ export async function GET(request: NextRequest) {
 
     // Backwards-compatible: return the full array (used by map + insights).
     const data = await fetchAllAssets(dsId)
-    return NextResponse.json(data)
+    return NextResponse.json(data, {
+      headers: { 'Cache-Control': 'private, max-age=10, stale-while-revalidate=30' },
+    })
   } catch (error) {
     console.error('API error:', error)
     return NextResponse.json([])

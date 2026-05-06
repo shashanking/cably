@@ -42,7 +42,7 @@ export default function VendorsPage() {
   const fetchVendors = useCallback(async () => {
     try {
       setLoading(true)
-      const res = await fetch('/api/vendors')
+      const res = await fetch('/api/vendors?withStats=1')
       const data = await res.json()
       if (Array.isArray(data)) setVendors(data)
     } catch (err) {

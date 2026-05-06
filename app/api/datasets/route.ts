@@ -35,6 +35,17 @@ async function backfill(datasetId: number) {
   return { bbox, centroid }
 }
 
+// Track which dataset backfills are already running so a hot-reload spam
+// doesn't trigger N concurrent backfills for the same row.
+const backfillInFlight = new Set<number>()
+function backfillIfNeeded(datasetId: number) {
+  if (backfillInFlight.has(datasetId)) return
+  backfillInFlight.add(datasetId)
+  backfill(datasetId)
+    .catch(err => console.error('Background backfill failed:', err))
+    .finally(() => backfillInFlight.delete(datasetId))
+}
+
 export async function GET() {
   try {
     const { data, error } = await supabase
@@ -46,14 +57,15 @@ export async function GET() {
       return NextResponse.json([])
     }
     const rows = data || []
+    // Fire backfills in the background — never block the response on them.
     for (const row of rows) {
       if (row.feature_count > 0 && (!row.bbox || !row.centroid)) {
-        const { bbox, centroid } = await backfill(row.id)
-        row.bbox = bbox
-        row.centroid = centroid
+        backfillIfNeeded(row.id)
       }
     }
-    return NextResponse.json(rows)
+    return NextResponse.json(rows, {
+      headers: { 'Cache-Control': 'private, max-age=10, stale-while-revalidate=30' },
+    })
   } catch (error) {
     console.error('Datasets API error:', error)
     return NextResponse.json([])

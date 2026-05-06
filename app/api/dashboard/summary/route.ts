@@ -195,6 +195,8 @@ export async function GET() {
       facilities,
       activePlan,
       plans,
+    }, {
+      headers: { 'Cache-Control': 'private, max-age=10, stale-while-revalidate=30' },
     })
   } catch (err: any) {
     console.error('[dashboard/summary] aggregation failed', err)

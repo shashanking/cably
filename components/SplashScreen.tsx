@@ -4,10 +4,10 @@ import { useEffect, useState, useRef } from 'react'
 import { useLoadingContext } from './LoadingContext'
 
 const DEFAULT_STATUS = 'Initializing Geospatial Engine...'
-const MIN_DURATION_MS = 180       // splash stays up at least this long (avoid flash)
+const MIN_DURATION_MS = 250       // splash stays up at least this long (avoid flash)
 const BOOT_MS = 100               // reach ~30% over this window before listening for tasks
-const TASK_GRACE_MS = 60          // after mount, wait this long for a page to register a task
-const MAX_DURATION_MS = 4000      // fallback: force dismiss even if a task never resolves
+const TASK_GRACE_MS = 350         // after mount, wait this long for a page to register a task (useEffect runs after commit)
+const MAX_DURATION_MS = 6000      // fallback: force dismiss even if a task never resolves
 
 export default function SplashScreen({ onComplete }: { onComplete: () => void }) {
   const ctx = useLoadingContext()
@@ -19,6 +19,11 @@ export default function SplashScreen({ onComplete }: { onComplete: () => void })
   const startedAtRef = useRef(Date.now())
   const dismissingRef = useRef(false)
   const progressRef = useRef(0)
+  // Track the most tasks ever seen at once + when the count last changed.
+  // This lets progress be tied to *actual* work completed, not a fake creep.
+  const taskMaxRef = useRef(0)
+  const lastTaskCountRef = useRef(0)
+  const lastTaskChangeAtRef = useRef(Date.now())
 
   // Particle network animation
   useEffect(() => {
@@ -80,44 +85,56 @@ export default function SplashScreen({ onComplete }: { onComplete: () => void })
     return () => { cancelAnimationFrame(raf); window.removeEventListener('resize', resize) }
   }, [])
 
-  // Smart event-driven progress — reads page loading tasks from LoadingContext.
-  // Phases: boot → wait → done. Progress is lerped toward a target each frame.
+  // Work-driven progress — bar moves when tasks actually complete, not on a timer.
+  // 0..30 = boot. 30..95 = task slots (each cleared task shifts the bar by 65/total).
+  // Within a task, a small asymptotic creep toward the next slot keeps the bar alive.
+  // 95..100 = final ramp once everything's cleared.
   useEffect(() => {
     let frame: number
     const tick = () => {
       if (dismissingRef.current) return
-      const elapsed = Date.now() - startedAtRef.current
+      const now = Date.now()
+      const elapsed = now - startedAtRef.current
       const tasks = ctx?.tasks || []
       const pending = tasks.length
-
-      // Decide target progress and label
-      let target: number
-      let label = DEFAULT_STATUS
       const latest = tasks[tasks.length - 1]
       const hardTimeout = elapsed > MAX_DURATION_MS
 
+      // Track high-water and detect task-count changes (jumps the bar forward).
+      if (pending > taskMaxRef.current) taskMaxRef.current = pending
+      if (pending !== lastTaskCountRef.current) {
+        lastTaskCountRef.current = pending
+        lastTaskChangeAtRef.current = now
+      }
+
+      let target: number
+      let label = DEFAULT_STATUS
+
       if (elapsed < BOOT_MS) {
-        // Boot: 0 → 30 linear
         target = (elapsed / BOOT_MS) * 30
         label = DEFAULT_STATUS
       } else if (!hardTimeout && (pending > 0 || (elapsed - BOOT_MS) < TASK_GRACE_MS)) {
-        // Wait: creep toward 88 but never exceed it while tasks are pending
-        const waitElapsed = Math.max(0, elapsed - BOOT_MS)
-        target = Math.min(88, 30 + (waitElapsed / 400) * 58)
+        // Anchor the bar to *real* work: each completed task is worth a slice.
+        const total = Math.max(1, taskMaxRef.current || 1)
+        const done = Math.max(0, total - pending)
+        const perSlot = 65 / total
+        const baseTarget = 30 + done * perSlot
+        // Within the current slot, slow asymptotic creep toward (but not past) the next.
+        const sinceChange = now - lastTaskChangeAtRef.current
+        const creep = perSlot * (1 - Math.exp(-sinceChange / 1500)) * 0.85
+        target = Math.min(95, baseTarget + creep)
         label = latest ? latest.label : 'Preparing…'
       } else {
-        // Done (tasks cleared past grace, OR min duration reached, OR hard timeout)
         target = 100
         label = 'System Ready'
       }
 
-      // Respect minimum splash duration before allowing 100%
+      // Respect minimum splash duration before allowing 100%.
       if (target >= 100 && elapsed < MIN_DURATION_MS) {
-        target = 92 + (elapsed / MIN_DURATION_MS) * 8
+        target = 95 + (elapsed / MIN_DURATION_MS) * 5
         label = latest ? latest.label : 'Almost ready…'
       }
 
-      // Smooth lerp toward target
       const next = progressRef.current + (target - progressRef.current) * 0.5
       progressRef.current = next
       setProgress(Math.round(next))
@@ -136,8 +153,6 @@ export default function SplashScreen({ onComplete }: { onComplete: () => void })
     }
     frame = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(frame)
-    // We intentionally ignore ctx?.tasks from deps — the rAF loop reads the
-    // latest `ctx` closure each tick via the stable reference.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx, onComplete])
 

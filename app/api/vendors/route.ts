@@ -4,9 +4,10 @@ import { supabase } from '../../../lib/supabase'
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    // Fetch all vendors
+    const withStats = request.nextUrl.searchParams.get('withStats') === '1'
+
     const { data: vendors, error: vendorError } = await supabase
       .from('vendors')
       .select('*')
@@ -17,7 +18,11 @@ export async function GET() {
       return NextResponse.json({ error: 'Failed to fetch vendors' }, { status: 500 })
     }
 
-    // Fetch asset counts and cost sums per vendor
+    // Fast path — map only needs id+name. Skip the full assets table scan.
+    if (!withStats) {
+      return NextResponse.json(vendors || [])
+    }
+
     const { data: assetStats, error: statsError } = await supabase
       .from('assets')
       .select('vendor_id, total_cost')
@@ -27,7 +32,6 @@ export async function GET() {
       return NextResponse.json({ error: 'Failed to fetch vendor stats' }, { status: 500 })
     }
 
-    // Aggregate in JS since Supabase JS client doesn't support GROUP BY natively
     const statsMap: Record<string, { asset_count: number; total_cost: number }> = {}
     for (const row of assetStats || []) {
       if (row.vendor_id == null) continue

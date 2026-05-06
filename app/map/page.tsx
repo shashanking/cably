@@ -155,9 +155,37 @@ export default function Home() {
     setLoading(false)
   }, [loadedDatasetIds, showToast])
 
-  /* Auto-load all saved datasets on mount — parallelized + staged overlay */
+  /* Auto-load saved datasets — streaming + lazy.
+     Smallest datasets first; commit each as it arrives so the splash drops on
+     the first commit instead of waiting for the slowest fetch. Datasets above
+     the auto-load budget stay in the saved-datasets sidebar for click-to-load. */
   useEffect(() => {
     let mounted = true
+    const AUTO_LOAD_MAX_DATASETS = 3
+    const AUTO_LOAD_FEATURE_BUDGET = 5000
+
+    function buildFeatures(assets: any[]): GeoJSON.Feature[] {
+      return assets.map((a: any) => ({
+        type: 'Feature' as const,
+        geometry: a.geometry,
+        properties: {
+          ...a.properties,
+          name: a.name || a.properties?.name,
+          _color: a.properties?.__color || a.properties?._color,
+          vendor_id: a.vendor_id ?? null,
+          status: a.status ?? a.properties?.status,
+          operational_status: a.operational_status ?? null,
+          utilization_pct: a.utilization_pct ?? null,
+          capacity_pct: a.capacity_pct ?? null,
+          region: a.region ?? null,
+          installed_year: a.installed_year ?? null,
+          cost_per_km: a.cost_per_km ?? null,
+          total_cost: a.total_cost ?? null,
+          length_km: a.length_km ?? null,
+        },
+      }))
+    }
+
     async function autoLoad() {
       setLoadState(s => ({ ...s, stage: 'connecting', currentLabel: 'Opening secure channel to datastore…' }))
       try {
@@ -172,88 +200,75 @@ export default function Home() {
           return
         }
         setSavedDatasets(datasets)
+
+        // Pick the auto-load set: smallest first, capped by count + feature budget.
+        const sorted = [...datasets].sort((a: any, b: any) => (a.feature_count || 0) - (b.feature_count || 0))
+        const autoLoadList: any[] = []
+        let budget = 0
+        for (const ds of sorted) {
+          const fc = ds.feature_count || 0
+          if (autoLoadList.length >= AUTO_LOAD_MAX_DATASETS) break
+          if (autoLoadList.length > 0 && budget + fc > AUTO_LOAD_FEATURE_BUDGET) break
+          autoLoadList.push(ds)
+          budget += fc
+        }
+
+        if (autoLoadList.length === 0) {
+          setLoadState(s => ({ ...s, stage: 'done' }))
+          return
+        }
+
         setLoadState(s => ({
-          ...s, stage: 'fetching', datasetsTotal: datasets.length,
-          currentLabel: `Queued ${datasets.length} dataset${datasets.length !== 1 ? 's' : ''}`,
+          ...s, stage: 'fetching', datasetsTotal: autoLoadList.length,
+          currentLabel: `Loading ${autoLoadList.length} of ${datasets.length} datasets…`,
         }))
 
-        let done = 0
-        let featuresTotal = 0
-        let attrsIndexed = 0
+        let committed = 0
 
-        // Fetch all datasets in parallel — the DB/API is the bottleneck.
-        const results = await Promise.all(
-          datasets.map(async (ds: any) => {
-            try {
-              const assets = await fetch(`/api/assets?dataset_id=${ds.id}`).then(r => r.json())
-              done += 1
-              if (!mounted) return null
-              setLoadState(s => ({
-                ...s, stage: 'fetching', datasetsDone: done,
-                currentLabel: `Fetched "${ds.name}" (${Array.isArray(assets) ? assets.length : 0})`,
-              }))
-              return { ds, assets }
-            } catch {
-              done += 1
-              setLoadState(s => ({ ...s, datasetsDone: done }))
-              return null
+        // Stream: each dataset is committed as soon as its fetch resolves.
+        // First commit moves stage past 'fetching' which dismisses the splash.
+        await Promise.all(autoLoadList.map(async (ds: any) => {
+          try {
+            const assets = await fetch(`/api/assets?dataset_id=${ds.id}`).then(r => r.json())
+            if (!mounted) return
+            const arr = Array.isArray(assets) ? assets : []
+
+            if (arr.length > 0) {
+              const features = buildFeatures(arr)
+              const geojson: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features }
+              const layer: LayerData = {
+                id: String(lid++), name: ds.name,
+                color: LAYER_TYPES[autoType(ds.name)].color,
+                visible: true, geojson, geomType: detectGeomType(geojson),
+                count: features.length, fillAttr: null, colorMap: null,
+              }
+              const group: FileGroup = { id: gid++, filename: ds.name, expanded: true, visible: true, layers: [layer] }
+              setGroups(prev => [...prev, group])
+              setLoadedDatasetIds(prev => new Set(prev).add(ds.id))
             }
-          })
-        )
-        if (!mounted) return
 
-        // Parse / index stage
-        setLoadState(s => ({ ...s, stage: 'parsing', currentLabel: 'Indexing attributes…' }))
-        const groupsToAdd: FileGroup[] = []
-        const idsToMark: number[] = []
-        for (const r of results) {
-          if (!r || !Array.isArray(r.assets) || r.assets.length === 0) continue
-          const features: GeoJSON.Feature[] = r.assets.map((a: any) => ({
-            type: 'Feature' as const,
-            geometry: a.geometry,
-            properties: {
-              ...a.properties,
-              name: a.name || a.properties?.name,
-              _color: a.properties?.__color || a.properties?._color,
-              vendor_id: a.vendor_id ?? null,
-              status: a.status ?? a.properties?.status,
-              // Scalar DB columns — surface them in map popups so edits are visible
-              operational_status: a.operational_status ?? null,
-              utilization_pct: a.utilization_pct ?? null,
-              capacity_pct: a.capacity_pct ?? null,
-              region: a.region ?? null,
-              installed_year: a.installed_year ?? null,
-              cost_per_km: a.cost_per_km ?? null,
-              total_cost: a.total_cost ?? null,
-              length_km: a.length_km ?? null,
-            },
-          }))
-          attrsIndexed += features.reduce((s, f) => s + Object.keys(f.properties || {}).length, 0)
-          featuresTotal += features.length
-          const geojson: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features }
-          const groupId = gid++
-          const layer: LayerData = {
-            id: String(lid++), name: r.ds.name,
-            color: LAYER_TYPES[autoType(r.ds.name)].color,
-            visible: true, geojson, geomType: detectGeomType(geojson),
-            count: features.length, fillAttr: null, colorMap: null,
+            committed += 1
+            const isFirst = committed === 1
+            setLoadState(s => ({
+              ...s,
+              // Drop splash on first commit — remaining datasets continue under MapLoadingOverlay.
+              stage: isFirst ? 'rendering' : s.stage,
+              datasetsDone: committed,
+              featuresTotal: (s.featuresTotal || 0) + arr.length,
+              currentLabel: `Loaded "${ds.name}" (${arr.length})`,
+            }))
+          } catch {
+            committed += 1
+            setLoadState(s => ({
+              ...s,
+              stage: committed === 1 ? 'rendering' : s.stage,
+              datasetsDone: committed,
+            }))
           }
-          groupsToAdd.push({ id: groupId, filename: r.ds.name, expanded: true, visible: true, layers: [layer] })
-          idsToMark.push(r.ds.id)
-        }
-
-        setLoadState(s => ({
-          ...s, stage: 'projecting', featuresTotal, attrsIndexed,
-          currentLabel: `Projecting ${featuresTotal.toLocaleString()} features to WGS84…`,
         }))
 
-        // Commit all at once — avoids N re-renders.
-        if (mounted && groupsToAdd.length > 0) {
-          setGroups(prev => [...prev, ...groupsToAdd])
-          setLoadedDatasetIds(prev => { const s = new Set(prev); idsToMark.forEach(id => s.add(id)); return s })
-        }
-
-        setLoadState(s => ({ ...s, stage: 'rendering', currentLabel: 'Rasterizing overlays on canvas…' }))
+        if (!mounted) return
+        setLoadState(s => ({ ...s, stage: 'rendering', currentLabel: 'Finalizing overlays…' }))
       } catch {
         setLoadState(s => ({ ...s, stage: 'done' }))
       }

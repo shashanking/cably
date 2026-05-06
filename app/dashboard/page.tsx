@@ -100,6 +100,21 @@ const AUTO_RULES: { p: RegExp; t: string }[] = [
   { p: /data.?cent|dc[\s_-]/i, t: 'datacenters' },
 ]
 
+// In-memory cache shared across mounts of this page (survives tab navigation,
+// resets on hard reload). Avoids re-fetching the dashboard's 4 endpoints
+// every time the user comes back from /assets, /map, etc.
+const DASHBOARD_CACHE_TTL_MS = 60_000
+type CacheEntry<T> = { data: T; ts: number }
+const dashCache: {
+  summary?: CacheEntry<ExecPayload>
+  vendors?: CacheEntry<Vendor[]>
+  datasets?: CacheEntry<{ id: number; name: string }[]>
+  assets?: CacheEntry<any[]>
+} = {}
+function isFresh<T>(e: CacheEntry<T> | undefined): e is CacheEntry<T> {
+  return !!e && Date.now() - e.ts < DASHBOARD_CACHE_TTL_MS
+}
+
 function classifyAsset(asset: any, datasetNameById: Map<number, string>): string {
   const folder = Array.isArray(asset.properties?.__folder)
     ? asset.properties.__folder[asset.properties.__folder.length - 1]
@@ -116,12 +131,13 @@ function classifyAsset(asset: any, datasetNameById: Map<number, string>): string
 }
 
 export default function DashboardPage() {
-  const [data, setData] = useState<ExecPayload | null>(null)
+  // Hydrate from in-memory cache so a tab away+back is instant.
+  const [data, setData] = useState<ExecPayload | null>(() => isFresh(dashCache.summary) ? dashCache.summary.data : null)
   const [err, setErr] = useState<string | null>(null)
   const [layers, setLayers] = useState<GeoLayer[]>([])
-  const [assets, setAssets] = useState<any[]>([])
-  const [vendors, setVendors] = useState<Vendor[]>([])
-  const [datasets, setDatasets] = useState<{ id: number; name: string }[]>([])
+  const [assets, setAssets] = useState<any[]>(() => isFresh(dashCache.assets) ? dashCache.assets.data : [])
+  const [vendors, setVendors] = useState<Vendor[]>(() => isFresh(dashCache.vendors) ? dashCache.vendors.data : [])
+  const [datasets, setDatasets] = useState<{ id: number; name: string }[]>(() => isFresh(dashCache.datasets) ? dashCache.datasets.data : [])
   const [routeFilter, setRouteFilter] = useState<RouteFilter>('all')
   const [editingPlan, setEditingPlan] = useState(false)
 
@@ -140,12 +156,26 @@ export default function DashboardPage() {
   usePageLoading('dashboard-assets', assets.length === 0, 'Fetching network assets…')
 
   useEffect(() => {
-    fetch('/api/dashboard/summary')
-      .then(r => r.json())
-      .then(d => { if (d.error) setErr(d.error); else setData(d) })
-      .catch(e => setErr(e.message))
-    fetch('/api/vendors').then(r => r.json()).then(d => { if (Array.isArray(d)) setVendors(d) }).catch(() => {})
-    fetch('/api/datasets').then(r => r.json()).then(d => { if (Array.isArray(d)) setDatasets(d) }).catch(() => {})
+    if (!isFresh(dashCache.summary)) {
+      fetch('/api/dashboard/summary')
+        .then(r => r.json())
+        .then(d => {
+          if (d.error) { setErr(d.error); return }
+          setData(d)
+          dashCache.summary = { data: d, ts: Date.now() }
+        })
+        .catch(e => setErr(e.message))
+    }
+    if (!isFresh(dashCache.vendors)) {
+      fetch('/api/vendors').then(r => r.json()).then(d => {
+        if (Array.isArray(d)) { setVendors(d); dashCache.vendors = { data: d, ts: Date.now() } }
+      }).catch(() => {})
+    }
+    if (!isFresh(dashCache.datasets)) {
+      fetch('/api/datasets').then(r => r.json()).then(d => {
+        if (Array.isArray(d)) { setDatasets(d); dashCache.datasets = { data: d, ts: Date.now() } }
+      }).catch(() => {})
+    }
   }, [])
 
   const datasetNameById = useMemo(() => {
@@ -155,11 +185,13 @@ export default function DashboardPage() {
   }, [datasets])
 
   useEffect(() => {
+    if (isFresh(dashCache.assets)) return
     (async () => {
       try {
         const res = await fetch('/api/assets').then(r => r.json())
         if (!Array.isArray(res)) return
         setAssets(res)
+        dashCache.assets = { data: res, ts: Date.now() }
       } catch (e) { console.error('[dashboard] asset load failed', e) }
     })()
   }, [])
@@ -401,16 +433,8 @@ export default function DashboardPage() {
     )
   }
 
-  if (!data) {
-    return (
-      <div className="h-[calc(100vh-52px)] flex items-center justify-center bg-slate-50">
-        <div className="flex items-center gap-3">
-          <div className="h-5 w-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-          <span className="text-sm text-slate-600">Loading Dashboard…</span>
-        </div>
-      </div>
-    )
-  }
+  // No fallback spinner — splash holds via usePageLoading('dashboard-summary').
+  if (!data) return null
 
   const costMin = filteredCostPerMile.length ? Math.min(...filteredCostPerMile.map(r => r.cost_per_mile)) : 0
   const costMax = filteredCostPerMile.length ? Math.max(...filteredCostPerMile.map(r => r.cost_per_mile)) : 1
