@@ -142,6 +142,9 @@ export default function DashboardPage() {
   const [editingPlan, setEditingPlan] = useState(false)
   const [assetsLoading, setAssetsLoading] = useState(() => !isFresh(dashCache.assets))
   const [assetsProgress, setAssetsProgress] = useState<{ loaded: number; total: number } | null>(null)
+  // Flips true after the dashboard has actually painted at least one frame.
+  // Splash holds until then so the user never sees the heavy tree mid-mount.
+  const [paintReady, setPaintReady] = useState(false)
 
   // Map-panel filters
   const [hiddenVendors, setHiddenVendors] = useState<Set<string>>(new Set())
@@ -156,6 +159,23 @@ export default function DashboardPage() {
   // Splash only waits for the lightweight aggregation. The full assets payload
   // streams in the background and progressively fills the map + facet sidebar.
   usePageLoading('dashboard-summary', !data && !err, 'Loading dashboard summary…')
+  // Hold splash for one paint cycle so the dashboard tree has actually
+  // committed + painted before the splash fades. Registered from the start
+  // so the splash sees both tasks together (no momentary "all clear" gap).
+  usePageLoading('dashboard-paint', !paintReady && !err, 'Rendering dashboard…')
+
+  useEffect(() => {
+    if (!data || paintReady) return
+    // Two rAFs: first frame commits, second confirms the browser has painted.
+    let r2 = 0
+    const r1 = requestAnimationFrame(() => {
+      r2 = requestAnimationFrame(() => setPaintReady(true))
+    })
+    return () => {
+      cancelAnimationFrame(r1)
+      if (r2) cancelAnimationFrame(r2)
+    }
+  }, [data, paintReady])
 
   useEffect(() => {
     if (!isFresh(dashCache.summary)) {
@@ -554,7 +574,7 @@ export default function DashboardPage() {
           <div className="col-span-12 lg:col-span-3 space-y-3">
             <Card title="Network Composition" accent="#8b5cf6">
               <div className="h-[180px] w-full relative">
-                <ResponsiveContainer width="100%" height="100%">
+                <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                   <PieChart>
                     <Pie
                       data={composition}
@@ -598,7 +618,7 @@ export default function DashboardPage() {
 
             <Card title="Vendor Cost Comparison (Annual)" accent="#3b82f6">
               <div className="h-[220px] w-full">
-                <ResponsiveContainer width="100%" height="100%">
+                <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                   <BarChart
                     data={filteredVendorCosts.map(v => ({ ...v, cost: Math.round(v.cost) }))}
                     layout="vertical"
