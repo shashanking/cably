@@ -140,6 +140,8 @@ export default function DashboardPage() {
   const [datasets, setDatasets] = useState<{ id: number; name: string }[]>(() => isFresh(dashCache.datasets) ? dashCache.datasets.data : [])
   const [routeFilter, setRouteFilter] = useState<RouteFilter>('all')
   const [editingPlan, setEditingPlan] = useState(false)
+  const [assetsLoading, setAssetsLoading] = useState(() => !isFresh(dashCache.assets))
+  const [assetsProgress, setAssetsProgress] = useState<{ loaded: number; total: number } | null>(null)
 
   // Map-panel filters
   const [hiddenVendors, setHiddenVendors] = useState<Set<string>>(new Set())
@@ -151,9 +153,9 @@ export default function DashboardPage() {
   const [mapCollapsed, setMapCollapsed] = useState(false)
   const [mapFullscreen, setMapFullscreen] = useState(false)
 
-  // Splash synchronisation — stay up until dashboard aggregation + assets land
+  // Splash only waits for the lightweight aggregation. The full assets payload
+  // streams in the background and progressively fills the map + facet sidebar.
   usePageLoading('dashboard-summary', !data && !err, 'Loading dashboard summary…')
-  usePageLoading('dashboard-assets', assets.length === 0, 'Fetching network assets…')
 
   useEffect(() => {
     if (!isFresh(dashCache.summary)) {
@@ -184,16 +186,65 @@ export default function DashboardPage() {
     return m
   }, [datasets])
 
+  // Progressive asset fetch — first chunk renders the map fast, rest streams.
+  // Splash is already gone by now (it's gated on summary only), so each chunk
+  // arriving causes a non-blocking re-render.
   useEffect(() => {
-    if (isFresh(dashCache.assets)) return
-    (async () => {
+    if (isFresh(dashCache.assets)) { setAssetsLoading(false); return }
+    let cancelled = false
+    const FIRST_CHUNK = 500
+    const PAGE = 1000
+    ;(async () => {
       try {
-        const res = await fetch('/api/assets').then(r => r.json())
-        if (!Array.isArray(res)) return
-        setAssets(res)
-        dashCache.assets = { data: res, ts: Date.now() }
-      } catch (e) { console.error('[dashboard] asset load failed', e) }
+        setAssetsLoading(true)
+        // First chunk: small + carries the total count.
+        const firstRes = await fetch(`/api/assets?limit=${FIRST_CHUNK}&offset=0&count=true`).then(r => r.json())
+        if (cancelled) return
+        const firstRows: any[] = Array.isArray(firstRes?.data) ? firstRes.data : []
+        const total: number = Number(firstRes?.total) || firstRows.length
+        if (firstRows.length === 0) {
+          setAssetsLoading(false)
+          dashCache.assets = { data: [], ts: Date.now() }
+          return
+        }
+        setAssets(firstRows)
+        setAssetsProgress({ loaded: firstRows.length, total })
+
+        // Remaining pages — fetched in parallel, appended in order.
+        const remaining = Math.max(0, total - firstRows.length)
+        if (remaining === 0) {
+          setAssetsLoading(false)
+          dashCache.assets = { data: firstRows, ts: Date.now() }
+          return
+        }
+        const pageCount = Math.ceil(remaining / PAGE)
+        const pages: any[][] = new Array(pageCount)
+        await Promise.all(
+          Array.from({ length: pageCount }, (_, i) => {
+            const offset = FIRST_CHUNK + i * PAGE
+            return fetch(`/api/assets?limit=${PAGE}&offset=${offset}`)
+              .then(r => r.json())
+              .then(json => {
+                if (cancelled) return
+                pages[i] = Array.isArray(json?.data) ? json.data : []
+                // Append this page eagerly; user sees the map populate.
+                setAssets(prev => [...prev, ...pages[i]])
+                setAssetsProgress(p => ({ loaded: (p?.loaded || 0) + pages[i].length, total }))
+              })
+              .catch(() => { pages[i] = [] })
+          }),
+        )
+        if (cancelled) return
+        const merged = [firstRows, ...pages].flat()
+        dashCache.assets = { data: merged, ts: Date.now() }
+        setAssetsLoading(false)
+        setAssetsProgress(null)
+      } catch (e) {
+        console.error('[dashboard] asset load failed', e)
+        setAssetsLoading(false)
+      }
     })()
+    return () => { cancelled = true }
   }, [])
 
   // Build map layers from assets + datasets, grouping by route category
@@ -708,6 +759,19 @@ export default function DashboardPage() {
                   : 'h-[440px] relative'
               }>
                 <ArcGISMap layers={filteredLayers} filter={mapFilter} />
+
+                {/* Lightweight progress chip while assets stream in.
+                    Splash is already gone — this just signals the map is still filling. */}
+                {assetsLoading && (
+                  <div className="absolute top-3 right-3 z-[9] bg-white/95 backdrop-blur border border-slate-200 rounded-full px-3 py-1.5 shadow-sm flex items-center gap-2">
+                    <div className="h-3 w-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                    <span className="text-[11px] font-medium text-slate-600 tabular-nums">
+                      {assetsProgress
+                        ? `Loading ${assetsProgress.loaded.toLocaleString()} / ${assetsProgress.total.toLocaleString()}`
+                        : 'Loading map data…'}
+                    </span>
+                  </div>
+                )}
 
                 {/* Filter dropdown overlay */}
                 {filterOpen && (

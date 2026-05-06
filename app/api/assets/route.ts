@@ -48,7 +48,7 @@ async function fetchAllAssets(datasetId?: number) {
 async function fetchPage(datasetId: number | undefined, offset: number, limit: number, wantCount: boolean) {
   let query = supabase
     .from('assets')
-    .select(SELECT_COLS, wantCount ? { count: 'exact' } : undefined)
+    .select(BULK_SELECT_COLS, wantCount ? { count: 'exact' } : undefined)
     .order('id', { ascending: true })
     .range(offset, offset + limit - 1)
   if (datasetId) query = query.eq('dataset_id', datasetId)
