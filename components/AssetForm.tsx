@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { cachedFetch, invalidate } from '../lib/clientCache'
 
 interface AssetFormProps { onAssetAdded?: () => void }
 interface Vendor { id: number; name: string }
@@ -19,7 +20,8 @@ export default function AssetForm({ onAssetAdded }: AssetFormProps) {
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
-    fetch('/api/vendors').then(r => r.json()).then(d => { if (Array.isArray(d)) setVendors(d) }).catch(() => {})
+    cachedFetch<Vendor[]>('vendors', () => fetch('/api/vendors').then(r => r.json()))
+      .then(d => { if (Array.isArray(d)) setVendors(d) }).catch(() => {})
   }, [])
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -45,6 +47,7 @@ export default function AssetForm({ onAssetAdded }: AssetFormProps) {
       if (res.ok) {
         setMessage('Asset created successfully'); setMessageType('success')
         setName(''); setLat(''); setLng(''); setVendorId(''); setCostPerKm('')
+        invalidate(['assets', 'dashboard'])
         onAssetAdded?.()
       } else { setMessage(result.error || 'Failed'); setMessageType('error') }
     } catch { setMessage('Failed to create asset'); setMessageType('error') }

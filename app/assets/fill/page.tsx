@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import ArcGISMap, { GeoLayer } from '../../../components/ArcGISMap'
 import { usePageLoading } from '../../../components/LoadingContext'
+import { invalidate } from '../../../lib/clientCache'
 
 /** Slim row returned by /api/assets/gaps — no geometry, minimal properties. */
 interface Asset {
@@ -374,6 +375,7 @@ export default function FillAttributesPage() {
       // Merge updated fields back into local asset
       setAssets(prev => prev.map(a => a.id === id ? { ...a, ...json } : a))
       setEdits(prev => { const n = { ...prev }; delete n[id]; return n })
+      invalidate(['assets', 'dashboard', `asset:${id}`])
       setSavedIds(s => new Set(s).add(id))
       setTimeout(() => setSavedIds(s => { const n = new Set(s); n.delete(id); return n }), 1500)
     } catch (e: any) {
@@ -431,6 +433,7 @@ export default function FillAttributesPage() {
           setAssets(prev => prev.map(a => a.id === id ? { ...a, ...json } : a))
         }
       }
+      invalidate(['assets', 'dashboard'])
       setToast(`Applied ${FIELD_LABELS[bulkField]} to ${ids.length} rows`)
       setBulkField(''); setBulkValue('')
     } catch (e: any) {

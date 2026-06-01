@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { cachedFetch, invalidate } from '../../../lib/clientCache'
 
 interface Asset {
   id: number
@@ -83,9 +84,12 @@ export default function AssetDetailPage() {
   const fetchAsset = useCallback(async () => {
     try {
       setLoading(true)
-      const res = await fetch(`/api/assets/${id}`)
-      if (!res.ok) throw new Error('Asset not found')
-      const data = await res.json()
+      // Short TTL — this view is the canonical edit surface, want fresh-ish data.
+      const data = await cachedFetch<any>(`asset:${id}`, async () => {
+        const res = await fetch(`/api/assets/${id}`)
+        if (!res.ok) throw new Error('Asset not found')
+        return res.json()
+      }, { ttlMs: 15_000 })
       setAsset(data)
       setForm({
         name: data.name ?? '',
@@ -111,8 +115,7 @@ export default function AssetDetailPage() {
 
   const fetchVendors = useCallback(async () => {
     try {
-      const res = await fetch('/api/vendors')
-      const data = await res.json()
+      const data = await cachedFetch<any[]>('vendors', () => fetch('/api/vendors').then(r => r.json()))
       if (Array.isArray(data)) setVendors(data.map((v: any) => ({ id: v.id, name: v.name })))
     } catch (err) {
       console.error('Failed to fetch vendors:', err)
@@ -165,6 +168,7 @@ export default function AssetDetailPage() {
 
       const updated = await res.json()
       setAsset(prev => prev ? { ...prev, ...updated } : prev)
+      invalidate(['assets', 'dashboard', `asset:${id}`])
       setFeedback({ type: 'success', message: 'Asset updated successfully' })
     } catch (err: any) {
       setFeedback({ type: 'error', message: err.message || 'Failed to save changes' })
@@ -183,6 +187,7 @@ export default function AssetDetailPage() {
         const err = await res.json()
         throw new Error(err.error || 'Failed to delete asset')
       }
+      invalidate(['assets', 'dashboard', `asset:${id}`])
       router.push('/assets')
     } catch (err: any) {
       setFeedback({ type: 'error', message: err.message || 'Failed to delete asset' })
