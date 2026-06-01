@@ -2,7 +2,6 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
-import { cachedFetch, getCached, invalidate } from '../../lib/clientCache'
 
 interface Vendor {
   id: number
@@ -30,8 +29,8 @@ function formatCurrency(value: number) {
 }
 
 export default function VendorsPage() {
-  const [vendors, setVendors] = useState<Vendor[]>(() => getCached<Vendor[]>('vendors:stats') ?? [])
-  const [loading, setLoading] = useState(() => getCached<Vendor[]>('vendors:stats') === undefined)
+  const [vendors, setVendors] = useState<Vendor[]>([])
+  const [loading, setLoading] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
   const [editingVendor, setEditingVendor] = useState<Vendor | null>(null)
   const [form, setForm] = useState<VendorForm>(emptyForm)
@@ -40,14 +39,11 @@ export default function VendorsPage() {
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
   const [tipDismissed, setTipDismissed] = useState(false)
 
-  const fetchVendors = useCallback(async (forceRefresh = false) => {
+  const fetchVendors = useCallback(async () => {
     try {
-      if (getCached<Vendor[]>('vendors:stats') === undefined) setLoading(true)
-      const data = await cachedFetch<Vendor[]>(
-        'vendors:stats',
-        () => fetch('/api/vendors?withStats=1').then(r => r.json()),
-        { force: forceRefresh },
-      )
+      setLoading(true)
+      const res = await fetch('/api/vendors?withStats=1')
+      const data = await res.json()
       if (Array.isArray(data)) setVendors(data)
     } catch (err) {
       console.error('Failed to fetch vendors:', err)
@@ -119,8 +115,7 @@ export default function VendorsPage() {
 
       setFeedback({ type: 'success', message: editingVendor ? 'Vendor updated successfully' : 'Vendor created successfully' })
       closeModal()
-      invalidate(['vendors', 'dashboard'])
-      fetchVendors(true)
+      fetchVendors()
     } catch (err: any) {
       setFeedback({ type: 'error', message: err.message || 'Failed to save vendor' })
     } finally {
@@ -141,8 +136,7 @@ export default function VendorsPage() {
       }
 
       setFeedback({ type: 'success', message: 'Vendor deleted successfully' })
-      invalidate(['vendors', 'dashboard'])
-      fetchVendors(true)
+      fetchVendors()
     } catch (err: any) {
       setFeedback({ type: 'error', message: err.message || 'Failed to delete vendor' })
     } finally {

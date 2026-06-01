@@ -5,7 +5,6 @@ import { PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, 
 import ArcGISMap, { GeoLayer, MapFilter } from '../../components/ArcGISMap'
 import { getOwnerValue, PALETTE } from '../../lib/styling'
 import { usePageLoading } from '../../components/LoadingContext'
-import { cachedFetch, getCached, setCached } from '../../lib/clientCache'
 
 type ExecPayload = {
   generatedAt: string
@@ -101,12 +100,20 @@ const AUTO_RULES: { p: RegExp; t: string }[] = [
   { p: /data.?cent|dc[\s_-]/i, t: 'datacenters' },
 ]
 
-// Cache keys for the shared client cache (lib/clientCache.ts).
-// Keep these stable — mutations elsewhere invalidate by prefix.
-const CK_SUMMARY = 'dashboard:summary'
-const CK_VENDORS = 'vendors'
-const CK_DATASETS = 'datasets'
-const CK_ASSETS = 'assets:all'
+// In-memory cache shared across mounts of this page (survives tab navigation,
+// resets on hard reload). Avoids re-fetching the dashboard's 4 endpoints
+// every time the user comes back from /assets, /map, etc.
+const DASHBOARD_CACHE_TTL_MS = 60_000
+type CacheEntry<T> = { data: T; ts: number }
+const dashCache: {
+  summary?: CacheEntry<ExecPayload>
+  vendors?: CacheEntry<Vendor[]>
+  datasets?: CacheEntry<{ id: number; name: string }[]>
+  assets?: CacheEntry<any[]>
+} = {}
+function isFresh<T>(e: CacheEntry<T> | undefined): e is CacheEntry<T> {
+  return !!e && Date.now() - e.ts < DASHBOARD_CACHE_TTL_MS
+}
 
 function classifyAsset(asset: any, datasetNameById: Map<number, string>): string {
   const folder = Array.isArray(asset.properties?.__folder)
@@ -124,16 +131,16 @@ function classifyAsset(asset: any, datasetNameById: Map<number, string>): string
 }
 
 export default function DashboardPage() {
-  // Hydrate from shared client cache so tab away+back is instant.
-  const [data, setData] = useState<ExecPayload | null>(() => getCached<ExecPayload>(CK_SUMMARY) ?? null)
+  // Hydrate from in-memory cache so a tab away+back is instant.
+  const [data, setData] = useState<ExecPayload | null>(() => isFresh(dashCache.summary) ? dashCache.summary.data : null)
   const [err, setErr] = useState<string | null>(null)
   const [layers, setLayers] = useState<GeoLayer[]>([])
-  const [assets, setAssets] = useState<any[]>(() => getCached<any[]>(CK_ASSETS) ?? [])
-  const [vendors, setVendors] = useState<Vendor[]>(() => getCached<Vendor[]>(CK_VENDORS) ?? [])
-  const [datasets, setDatasets] = useState<{ id: number; name: string }[]>(() => getCached<{ id: number; name: string }[]>(CK_DATASETS) ?? [])
+  const [assets, setAssets] = useState<any[]>(() => isFresh(dashCache.assets) ? dashCache.assets.data : [])
+  const [vendors, setVendors] = useState<Vendor[]>(() => isFresh(dashCache.vendors) ? dashCache.vendors.data : [])
+  const [datasets, setDatasets] = useState<{ id: number; name: string }[]>(() => isFresh(dashCache.datasets) ? dashCache.datasets.data : [])
   const [routeFilter, setRouteFilter] = useState<RouteFilter>('all')
   const [editingPlan, setEditingPlan] = useState(false)
-  const [assetsLoading, setAssetsLoading] = useState(() => getCached<any[]>(CK_ASSETS) === undefined)
+  const [assetsLoading, setAssetsLoading] = useState(() => !isFresh(dashCache.assets))
   const [assetsProgress, setAssetsProgress] = useState<{ loaded: number; total: number } | null>(null)
   // Flips true after the dashboard has actually painted at least one frame.
   // Splash holds until then so the user never sees the heavy tree mid-mount.
@@ -171,15 +178,26 @@ export default function DashboardPage() {
   }, [data, paintReady])
 
   useEffect(() => {
-    cachedFetch<ExecPayload>(CK_SUMMARY, () => fetch('/api/dashboard/summary').then(r => r.json()))
-      .then(d => { if ((d as any)?.error) setErr((d as any).error); else setData(d) })
-      .catch(e => setErr(e.message))
-    cachedFetch<Vendor[]>(CK_VENDORS, () => fetch('/api/vendors').then(r => r.json()))
-      .then(d => { if (Array.isArray(d)) setVendors(d) })
-      .catch(() => {})
-    cachedFetch<{ id: number; name: string }[]>(CK_DATASETS, () => fetch('/api/datasets').then(r => r.json()))
-      .then(d => { if (Array.isArray(d)) setDatasets(d) })
-      .catch(() => {})
+    if (!isFresh(dashCache.summary)) {
+      fetch('/api/dashboard/summary')
+        .then(r => r.json())
+        .then(d => {
+          if (d.error) { setErr(d.error); return }
+          setData(d)
+          dashCache.summary = { data: d, ts: Date.now() }
+        })
+        .catch(e => setErr(e.message))
+    }
+    if (!isFresh(dashCache.vendors)) {
+      fetch('/api/vendors').then(r => r.json()).then(d => {
+        if (Array.isArray(d)) { setVendors(d); dashCache.vendors = { data: d, ts: Date.now() } }
+      }).catch(() => {})
+    }
+    if (!isFresh(dashCache.datasets)) {
+      fetch('/api/datasets').then(r => r.json()).then(d => {
+        if (Array.isArray(d)) { setDatasets(d); dashCache.datasets = { data: d, ts: Date.now() } }
+      }).catch(() => {})
+    }
   }, [])
 
   const datasetNameById = useMemo(() => {
@@ -192,29 +210,31 @@ export default function DashboardPage() {
   // Splash is already gone by now (it's gated on summary only), so each chunk
   // arriving causes a non-blocking re-render.
   useEffect(() => {
-    if (getCached<any[]>(CK_ASSETS) !== undefined) { setAssetsLoading(false); return }
+    if (isFresh(dashCache.assets)) { setAssetsLoading(false); return }
     let cancelled = false
     const FIRST_CHUNK = 500
     const PAGE = 1000
     ;(async () => {
       try {
         setAssetsLoading(true)
+        // First chunk: small + carries the total count.
         const firstRes = await fetch(`/api/assets?limit=${FIRST_CHUNK}&offset=0&count=true`).then(r => r.json())
         if (cancelled) return
         const firstRows: any[] = Array.isArray(firstRes?.data) ? firstRes.data : []
         const total: number = Number(firstRes?.total) || firstRows.length
         if (firstRows.length === 0) {
           setAssetsLoading(false)
-          setCached(CK_ASSETS, [])
+          dashCache.assets = { data: [], ts: Date.now() }
           return
         }
         setAssets(firstRows)
         setAssetsProgress({ loaded: firstRows.length, total })
 
+        // Remaining pages — fetched in parallel, appended in order.
         const remaining = Math.max(0, total - firstRows.length)
         if (remaining === 0) {
           setAssetsLoading(false)
-          setCached(CK_ASSETS, firstRows)
+          dashCache.assets = { data: firstRows, ts: Date.now() }
           return
         }
         const pageCount = Math.ceil(remaining / PAGE)
@@ -227,6 +247,7 @@ export default function DashboardPage() {
               .then(json => {
                 if (cancelled) return
                 pages[i] = Array.isArray(json?.data) ? json.data : []
+                // Append this page eagerly; user sees the map populate.
                 setAssets(prev => [...prev, ...pages[i]])
                 setAssetsProgress(p => ({ loaded: (p?.loaded || 0) + pages[i].length, total }))
               })
@@ -235,7 +256,7 @@ export default function DashboardPage() {
         )
         if (cancelled) return
         const merged = [firstRows, ...pages].flat()
-        setCached(CK_ASSETS, merged)
+        dashCache.assets = { data: merged, ts: Date.now() }
         setAssetsLoading(false)
         setAssetsProgress(null)
       } catch (e) {

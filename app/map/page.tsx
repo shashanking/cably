@@ -5,7 +5,6 @@ import ArcGISMap, { GeoLayer, MapFilter } from '../../components/ArcGISMap'
 import MapLoadingOverlay, { LoadState } from '../../components/MapLoadingOverlay'
 import { getOwnerValue } from '../../lib/styling'
 import { usePageLoading } from '../../components/LoadingContext'
-import { cachedFetch, invalidate } from '../../lib/clientCache'
 
 /* ── COLOR MAP UTILS ── */
 const CAT_COLORS = ['#2563EB','#F59E0B','#059669','#dc2626','#7c3aed','#0891b2','#ea580c','#6366f1','#be185d','#65a30d','#0ea5e9','#db2777']
@@ -136,20 +135,14 @@ export default function Home() {
   const [loadedDatasetIds, setLoadedDatasetIds] = useState<Set<number>>(new Set())
 
   const refreshDatasets = useCallback(async () => {
-    try {
-      // Force-refresh: called after uploads/deletes — bypass and reseed the cache,
-      // and bust the dashboard summary since the asset table changed.
-      invalidate(['datasets', 'assets', 'dashboard'])
-      const d = await cachedFetch<any[]>('datasets', () => fetch('/api/datasets').then(r => r.json()), { force: true })
-      if (Array.isArray(d)) setSavedDatasets(d)
-    } catch {}
+    try { const d = await fetch('/api/datasets').then(r => r.json()); if (Array.isArray(d)) setSavedDatasets(d) } catch {}
   }, [])
 
   const loadFromDB = useCallback(async (ds: { id: number; name: string; feature_count: number }) => {
     if (loadedDatasetIds.has(ds.id)) return
     setLoading(true)
     try {
-      const assets = await cachedFetch<any[]>(`assets:ds:${ds.id}`, () => fetch(`/api/assets?dataset_id=${ds.id}`).then(r => r.json()))
+      const assets = await fetch(`/api/assets?dataset_id=${ds.id}`).then(r => r.json())
       if (!Array.isArray(assets) || !assets.length) { showToast('No features in dataset', 'warn'); setLoading(false); return }
       const features: GeoJSON.Feature[] = assets.map((a: any) => ({ type: 'Feature' as const, geometry: a.geometry, properties: { ...a.properties, name: a.name || a.properties?.name, _color: a.properties?.__color || a.properties?._color } }))
       const geojson: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features }
@@ -197,8 +190,8 @@ export default function Home() {
       setLoadState(s => ({ ...s, stage: 'connecting', currentLabel: 'Opening secure channel to datastore…' }))
       try {
         const [datasets, vendorList] = await Promise.all([
-          cachedFetch<any[]>('datasets', () => fetch('/api/datasets').then(r => r.json())).catch(() => []),
-          cachedFetch<any[]>('vendors', () => fetch('/api/vendors').then(r => r.json())).catch(() => []),
+          fetch('/api/datasets').then(r => r.json()).catch(() => []),
+          fetch('/api/vendors').then(r => r.json()).catch(() => []),
         ])
         if (!mounted) return
         if (Array.isArray(vendorList)) setVendors(vendorList)
@@ -236,7 +229,7 @@ export default function Home() {
         // First commit moves stage past 'fetching' which dismisses the splash.
         await Promise.all(autoLoadList.map(async (ds: any) => {
           try {
-            const assets = await cachedFetch<any[]>(`assets:ds:${ds.id}`, () => fetch(`/api/assets?dataset_id=${ds.id}`).then(r => r.json()))
+            const assets = await fetch(`/api/assets?dataset_id=${ds.id}`).then(r => r.json())
             if (!mounted) return
             const arr = Array.isArray(assets) ? assets : []
 

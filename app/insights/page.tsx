@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { getOwnerValue } from '../../lib/styling'
-import { cachedFetch, getCached } from '../../lib/clientCache'
 
 interface Asset { id: number; type: string; geometry: any; properties: any; total_cost?: number; cost_per_km?: number; length_km?: number; vendor_id?: number; status?: string }
 interface Dataset { id: number; name: string; source_file: string | null; feature_count: number }
@@ -35,27 +34,23 @@ const ICONS = {
 }
 
 export default function InsightsPage() {
-  const [assets, setAssets] = useState<Asset[]>(() => getCached<Asset[]>('assets:all') ?? [])
-  const [datasets, setDatasets] = useState<Dataset[]>(() => getCached<Dataset[]>('datasets') ?? [])
+  const [assets, setAssets] = useState<Asset[]>([])
+  const [datasets, setDatasets] = useState<Dataset[]>([])
   const [datasetId, setDatasetId] = useState<number | null>(null)
-  const [costData, setCostData] = useState<CostSummary | null>(() => getCached<CostSummary>('costs:summary') ?? null)
+  const [costData, setCostData] = useState<CostSummary | null>(null)
 
   useEffect(() => {
     Promise.all([
-      cachedFetch<Dataset[]>('datasets', () => fetch('/api/datasets').then(r => r.json())).catch(() => [] as Dataset[]),
-      cachedFetch<CostSummary | null>('costs:summary', () => fetch('/api/costs/summary').then(r => r.json())).catch(() => null),
+      fetch('/api/datasets').then(r => r.json()).catch(() => []),
+      fetch('/api/costs/summary').then(r => r.json()).catch(() => null),
     ]).then(([d, c]) => {
       if (Array.isArray(d)) setDatasets(d)
-      if (c && !(c as any).error) setCostData(c)
+      if (c && !c.error) setCostData(c)
     })
   }, [])
 
   useEffect(() => {
-    const key = datasetId ? `assets:ds:${datasetId}` : 'assets:all'
-    const url = datasetId ? `/api/assets?dataset_id=${datasetId}` : '/api/assets'
-    cachedFetch<Asset[]>(key, () => fetch(url).then(r => r.json()))
-      .then(d => { if (Array.isArray(d)) setAssets(d) })
-      .catch(console.error)
+    fetch(datasetId ? `/api/assets?dataset_id=${datasetId}` : '/api/assets').then(r => r.json()).then(d => { if (Array.isArray(d)) setAssets(d) }).catch(console.error)
   }, [datasetId])
 
   const metrics = useMemo(() => {

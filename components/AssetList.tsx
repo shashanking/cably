@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { cachedFetch } from '../lib/clientCache'
 
 interface Asset { id: number; type: string; geometry: any; properties: any }
 interface AssetListProps { onSelectAsset: (asset: Asset) => void; refreshTrigger?: number }
@@ -11,11 +10,7 @@ const typeColors: Record<string, string> = { 'Fiber Optic Cable': '#2563eb', 'Et
 export default function AssetList({ onSelectAsset, refreshTrigger }: AssetListProps) {
   const [assets, setAssets] = useState<Asset[]>([]); const [filter, setFilter] = useState(''); const [selectedId, setSelectedId] = useState<number | null>(null)
 
-  useEffect(() => {
-    cachedFetch<Asset[]>('assets:all', () => fetch('/api/assets').then(r => r.json()), { force: !!refreshTrigger })
-      .then(d => setAssets(Array.isArray(d) ? d : []))
-      .catch(console.error)
-  }, [refreshTrigger])
+  useEffect(() => { fetch('/api/assets').then(r => r.json()).then(d => setAssets(Array.isArray(d) ? d : [])).catch(console.error) }, [refreshTrigger])
 
   const filtered = assets.filter(a => a.properties?.name?.toLowerCase().includes(filter.toLowerCase()) || a.type.toLowerCase().includes(filter.toLowerCase()))
 

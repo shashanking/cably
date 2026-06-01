@@ -21,51 +21,24 @@ type AssetRow = {
   created_at: string
 }
 
-// Drop unused columns (region, installed_year) — they're declared in AssetRow
-// but never read in this aggregation.
-const ASSET_COLS = 'id, type, name, status, operational_status, utilization_pct, capacity_pct, vendor_id, cost_per_km, total_cost, length_km, created_at'
-const PAGE = 1000
-const PARALLEL_PAGES = 6
-
 async function fetchAllAssets(): Promise<AssetRow[]> {
-  // HEAD count first so we can fan out pages in parallel and bound the work.
-  const { count, error: cErr } = await supabase
-    .from('assets')
-    .select('id', { count: 'exact', head: true })
-  if (cErr) throw new Error(`Supabase: ${cErr.message}`)
-  const total = count ?? 0
-  if (total === 0) return []
-
-  const pageCount = Math.ceil(total / PAGE)
-  const pages: AssetRow[][] = new Array(pageCount)
-  let cursor = 0
-  async function worker() {
-    while (true) {
-      const i = cursor++
-      if (i >= pageCount) return
-      const from = i * PAGE
-      const to = Math.min(from + PAGE - 1, total - 1)
-      // ORDER BY id ascending lets Postgres use the PK index — without it,
-      // .range() degrades to a heap scan per page which intermittently times out.
-      const { data, error } = await supabase
-        .from('assets')
-        .select(ASSET_COLS)
-        .order('id', { ascending: true })
-        .range(from, to)
-      if (error) throw new Error(`Supabase: ${error.message}`)
-      pages[i] = (data as AssetRow[]) || []
+  const COLS = 'id, type, name, status, operational_status, utilization_pct, capacity_pct, vendor_id, cost_per_km, total_cost, length_km, region, installed_year, created_at'
+  const PAGE = 1000
+  let all: AssetRow[] = []
+  let from = 0
+  while (true) {
+    const { data, error } = await supabase.from('assets').select(COLS).range(from, from + PAGE - 1)
+    if (error) {
+      // Surface schema / permission errors instead of silently returning empty
+      throw new Error(`Supabase: ${error.message}`)
     }
+    if (!data || data.length === 0) break
+    all = all.concat(data as AssetRow[])
+    if (data.length < PAGE) break
+    from += PAGE
   }
-  await Promise.all(Array.from({ length: Math.min(PARALLEL_PAGES, pageCount) }, worker))
-  return pages.flat()
+  return all
 }
-
-// Module-level fallback cache — survives across requests in a warm container.
-// If a live aggregation times out, we serve the last successful payload instead
-// of breaking the dashboard.
-type SummaryPayload = Record<string, unknown>
-const STALE_FALLBACK_MAX_AGE_MS = 5 * 60_000
-let lastSuccessful: { data: SummaryPayload; ts: number } | null = null
 
 // Treat fiber-like asset types as "routes". Everything else (POP / WC / DC / etc.)
 // counts as a facility / node.
@@ -200,7 +173,7 @@ export async function GET() {
       capacity: avg(f.capacity), utilization: avg(f.utilization),
     }))
 
-    const payload = {
+    return NextResponse.json({
       generatedAt: new Date().toISOString(),
       kpis: {
         networkCoveragePct,
@@ -222,24 +195,11 @@ export async function GET() {
       facilities,
       activePlan,
       plans,
-    }
-    lastSuccessful = { data: payload, ts: Date.now() }
-    return NextResponse.json(payload, {
+    }, {
       headers: { 'Cache-Control': 'private, max-age=10, stale-while-revalidate=30' },
     })
   } catch (err: any) {
     console.error('[dashboard/summary] aggregation failed', err)
-    // Fallback: serve the last successful aggregation if it's recent enough.
-    // Prevents intermittent Supabase statement-timeouts from blanking the UI.
-    if (lastSuccessful && Date.now() - lastSuccessful.ts < STALE_FALLBACK_MAX_AGE_MS) {
-      return NextResponse.json(lastSuccessful.data, {
-        headers: {
-          'Cache-Control': 'private, max-age=10, stale-while-revalidate=30',
-          'X-Cache': 'stale-fallback',
-          'X-Cache-Age-Ms': String(Date.now() - lastSuccessful.ts),
-        },
-      })
-    }
     return NextResponse.json({ error: err.message || 'dashboard aggregation failed' }, { status: 500 })
   }
 }

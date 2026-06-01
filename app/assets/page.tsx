@@ -3,7 +3,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
 import { usePageLoading } from '../../components/LoadingContext'
-import { cachedFetch, getCached, invalidate } from '../../lib/clientCache'
 
 const PAGE_SIZE = 200
 
@@ -24,13 +23,10 @@ interface Asset {
 
 interface Vendor { id: number; name: string }
 
-// Cache keys for paginated asset pages: 'assets:list:page0', 'assets:list:page200', …
-const ckPage = (offset: number) => `assets:list:p${offset}`
-
 export default function AssetsPage() {
-  const [assets, setAssets] = useState<Asset[]>(() => getCached<Asset[]>('assets:list:full') ?? [])
-  const [vendors, setVendors] = useState<Vendor[]>(() => getCached<Vendor[]>('vendors') ?? [])
-  const [loading, setLoading] = useState(() => getCached<Asset[]>('assets:list:full') === undefined)
+  const [assets, setAssets] = useState<Asset[]>([])
+  const [vendors, setVendors] = useState<Vendor[]>([])
+  const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('')
   const [typeFilter, setTypeFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
@@ -47,10 +43,8 @@ export default function AssetsPage() {
   usePageLoading('assets-list', loading, 'Loading assets…')
 
   const loadPage = useCallback(async (offset: number, replace = false) => {
-    const key = ckPage(offset)
-    const json: any = await cachedFetch<any>(key, () =>
-      fetch(`/api/assets?limit=${PAGE_SIZE}&offset=${offset}${offset === 0 ? '&count=true' : ''}`).then(r => r.json()),
-    )
+    const res = await fetch(`/api/assets?limit=${PAGE_SIZE}&offset=${offset}${offset === 0 ? '&count=true' : ''}`)
+    const json = await res.json()
     const rows: Asset[] = Array.isArray(json) ? json : (json?.data || [])
     if (offset === 0 && typeof json?.total === 'number') setTotal(json.total)
     setAssets(prev => replace ? rows : [...prev, ...rows])
@@ -62,7 +56,7 @@ export default function AssetsPage() {
       try {
         const [, v] = await Promise.all([
           loadPage(0, true),
-          cachedFetch<Vendor[]>('vendors', () => fetch('/api/vendors').then(r => r.json())).catch(() => [] as Vendor[]),
+          fetch('/api/vendors').then(r => r.json()).catch(() => []),
         ])
         if (mounted && Array.isArray(v)) setVendors(v)
       } catch (e) { console.error(e) }
@@ -153,7 +147,6 @@ export default function AssetsPage() {
         status: 'status' in payload ? payload.status : a.status,
       } : a))
       setToast(`Updated ${data.updated ?? selected.size} asset${selected.size !== 1 ? 's' : ''}`)
-      invalidate(['assets', 'dashboard'])
       clearSelection()
       setBulkVendor(''); setBulkStatus('')
     } catch (e: any) {
@@ -169,7 +162,6 @@ export default function AssetsPage() {
       const res = await fetch(`/api/assets/${id}`, { method: 'DELETE' })
       if (res.ok) {
         setAssets(prev => prev.filter(a => a.id !== id))
-        invalidate(['assets', 'dashboard', `asset:${id}`])
         setToast('Asset deleted successfully')
       }
     } catch (e) { console.error(e) }
