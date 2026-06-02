@@ -117,7 +117,27 @@ const STATUSES = ['active', 'planned', 'maintenance', 'decommissioned']
 const OP_STATUSES = ['online', 'offline', 'warning']
 const REGIONS = ['West', 'Southwest', 'Midwest', 'Southeast', 'Northeast']
 
+// Line-like geometries carry length + per-km cost; points/polygons don't.
+// For KML uploads the `type` column holds the geometry type (LineString,
+// Point, Polygon, MultiLineString …); for manually-created facility records
+// `type` is "Pole"/"POP"/etc. — never line-like.
+function isLineLike(a: Pick<Asset, 'type'>): boolean {
+  const t = (a?.type || '').toLowerCase()
+  return t.includes('line')
+}
+
+// Fields that only make sense on line geometries. Hidden / disabled for
+// points + polygons.
+const LINE_ONLY_FIELDS = new Set<EditableField>(['length_km', 'cost_per_km'])
+function fieldApplies(a: Asset, f: EditableField): boolean {
+  if (LINE_ONLY_FIELDS.has(f) && !isLineLike(a)) return false
+  return true
+}
+
 function isMissing(a: Asset, f: EditableField): boolean {
+  // Skip "missing" detection for line-only fields on non-line rows — they
+  // can never be filled, so flagging them as gaps is misleading.
+  if (!fieldApplies(a, f)) return false
   const v = a[f]
   return v === null || v === undefined || v === ''
 }
@@ -417,7 +437,15 @@ export default function FillAttributesPage() {
       const numericFields = new Set<EditableField>(['utilization_pct', 'capacity_pct', 'installed_year', 'cost_per_km', 'total_cost', 'length_km', 'vendor_id'])
       if (numericFields.has(bulkField)) value = Number(bulkValue)
 
-      const ids = Array.from(selectedIds)
+      const allSelected = Array.from(selectedIds)
+      // Skip rows where this field doesn't apply (e.g. bulk-setting length_km
+      // on a Point asset is meaningless and would just persist a stale number).
+      const idToAsset = new Map(assets.map(a => [a.id, a]))
+      const ids = allSelected.filter(id => {
+        const a = idToAsset.get(id)
+        return a ? fieldApplies(a, bulkField) : true
+      })
+      const skipped = allSelected.length - ids.length
       const payload: Partial<Asset> = { [bulkField]: value } as any
 
       // Serial — respect API pacing
@@ -431,7 +459,11 @@ export default function FillAttributesPage() {
           setAssets(prev => prev.map(a => a.id === id ? { ...a, ...json } : a))
         }
       }
-      setToast(`Applied ${FIELD_LABELS[bulkField]} to ${ids.length} rows`)
+      setToast(
+        skipped > 0
+          ? `Applied ${FIELD_LABELS[bulkField]} to ${ids.length} rows; skipped ${skipped} (not applicable)`
+          : `Applied ${FIELD_LABELS[bulkField]} to ${ids.length} rows`,
+      )
       setBulkField(''); setBulkValue('')
     } catch (e: any) {
       setToast(`Bulk apply failed: ${e.message}`)
@@ -723,11 +755,15 @@ export default function FillAttributesPage() {
                       <CellNumber a={a} field="installed_year" value={valueFor(a, 'installed_year')} missing={isMissing(a, 'installed_year')}
                         onChange={v => setField(a.id, 'installed_year', v)} min={1900} max={2100} step={1} />
                       <CellNumber a={a} field="cost_per_km" value={valueFor(a, 'cost_per_km')} missing={isMissing(a, 'cost_per_km')}
-                        onChange={v => setField(a.id, 'cost_per_km', v)} min={0} step={0.01} />
+                        onChange={v => setField(a.id, 'cost_per_km', v)} min={0} step={0.01}
+                        disabled={!fieldApplies(a, 'cost_per_km')}
+                        disabledReason={`Cost-per-km is only meaningful for line assets (this is a ${a.type || 'point/polygon'}).`} />
                       <CellNumber a={a} field="total_cost" value={valueFor(a, 'total_cost')} missing={isMissing(a, 'total_cost')}
                         onChange={v => setField(a.id, 'total_cost', v)} min={0} step={1} />
                       <CellNumber a={a} field="length_km" value={valueFor(a, 'length_km')} missing={isMissing(a, 'length_km')}
-                        onChange={v => setField(a.id, 'length_km', v)} min={0} step={0.001} />
+                        onChange={v => setField(a.id, 'length_km', v)} min={0} step={0.001}
+                        disabled={!fieldApplies(a, 'length_km')}
+                        disabledReason={`Length is only meaningful for line assets (this is a ${a.type || 'point/polygon'}).`} />
                       <td className="px-3 py-1.5 align-middle text-center">
                         <button
                           onClick={() => saveRow(a.id)}
@@ -987,10 +1023,18 @@ function CellSelect({ value, missing, onChange, options, renderValue }: {
   )
 }
 
-function CellNumber({ value, missing, onChange, min, max, step }: {
+function CellNumber({ value, missing, onChange, min, max, step, disabled, disabledReason }: {
   a: Asset; field: EditableField; value: any; missing: boolean;
-  onChange: (v: number | null) => void; min?: number; max?: number; step?: number
+  onChange: (v: number | null) => void; min?: number; max?: number; step?: number;
+  disabled?: boolean; disabledReason?: string
 }) {
+  if (disabled) {
+    return (
+      <td className="px-2 py-1.5 align-middle" title={disabledReason || 'Not applicable'}>
+        <div className="w-full text-right text-[11px] text-slate-300 italic select-none">N/A</div>
+      </td>
+    )
+  }
   return (
     <td className="px-2 py-1.5 align-middle">
       <input

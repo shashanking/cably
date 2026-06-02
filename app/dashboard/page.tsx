@@ -115,17 +115,38 @@ function isFresh<T>(e: CacheEntry<T> | undefined): e is CacheEntry<T> {
   return !!e && Date.now() - e.ts < DASHBOARD_CACHE_TTL_MS
 }
 
+// LineString geometries are always routes — never POPs / wire centers /
+// data centers, even if the KML folder name happens to match a facility regex
+// (e.g. "POP Connections" full of cable lines). Without this guard those
+// lines vanished from the route totals AND got mis-styled on the map.
+const FACILITY_CATS = new Set(['pops', 'wirecenters', 'colo', 'datacenters'])
+function isLineGeom(geom: any): boolean {
+  if (!geom?.type) return false
+  return geom.type === 'LineString' || geom.type === 'MultiLineString'
+}
 function classifyAsset(asset: any, datasetNameById: Map<number, string>): string {
+  const lineGeom = isLineGeom(asset.geometry)
+  const apply = (matched: string): string | null =>
+    (lineGeom && FACILITY_CATS.has(matched)) ? null : matched
+
   const folder = Array.isArray(asset.properties?.__folder)
     ? asset.properties.__folder[asset.properties.__folder.length - 1]
     : null
-  if (folder) for (const r of AUTO_RULES) if (r.p.test(String(folder))) return r.t
+  if (folder) for (const r of AUTO_RULES) if (r.p.test(String(folder))) {
+    const a = apply(r.t); if (a) return a
+  }
   const ds = asset.dataset_id != null ? datasetNameById.get(asset.dataset_id) : null
-  if (ds) for (const r of AUTO_RULES) if (r.p.test(String(ds))) return r.t
-  if (asset.name) for (const r of AUTO_RULES) if (r.p.test(String(asset.name))) return r.t
+  if (ds) for (const r of AUTO_RULES) if (r.p.test(String(ds))) {
+    const a = apply(r.t); if (a) return a
+  }
+  if (asset.name) for (const r of AUTO_RULES) if (r.p.test(String(asset.name))) {
+    const a = apply(r.t); if (a) return a
+  }
   const tags = [asset.properties?.network_type, asset.properties?.Category, asset.properties?.layer, asset.properties?.Layer]
   for (const tg of tags) {
-    if (tg) for (const r of AUTO_RULES) if (r.p.test(String(tg))) return r.t
+    if (tg) for (const r of AUTO_RULES) if (r.p.test(String(tg))) {
+      const a = apply(r.t); if (a) return a
+    }
   }
   return 'other'
 }
@@ -135,13 +156,28 @@ export default function DashboardPage() {
   const [data, setData] = useState<ExecPayload | null>(() => isFresh(dashCache.summary) ? dashCache.summary.data : null)
   const [err, setErr] = useState<string | null>(null)
   const [layers, setLayers] = useState<GeoLayer[]>([])
-  const [assets, setAssets] = useState<any[]>(() => isFresh(dashCache.assets) ? dashCache.assets.data : [])
+  // Don't hydrate assets from cache — uploads on /map don't invalidate this
+  // entry, so a stale empty array would block lines/points from showing up.
+  // The asset-rows endpoint is fast; refetching on every mount is fine.
+  const [assets, setAssets] = useState<any[]>([])
   const [vendors, setVendors] = useState<Vendor[]>(() => isFresh(dashCache.vendors) ? dashCache.vendors.data : [])
-  const [datasets, setDatasets] = useState<{ id: number; name: string }[]>(() => isFresh(dashCache.datasets) ? dashCache.datasets.data : [])
+  const [datasets, setDatasets] = useState<{ id: number; name: string; feature_count?: number }[]>(() => isFresh(dashCache.datasets) ? dashCache.datasets.data : [])
+  const [datasetsMenuOpen, setDatasetsMenuOpen] = useState(false)
+  const [deletingDatasetId, setDeletingDatasetId] = useState<number | null>(null)
   const [routeFilter, setRouteFilter] = useState<RouteFilter>('all')
   const [editingPlan, setEditingPlan] = useState(false)
-  const [assetsLoading, setAssetsLoading] = useState(() => !isFresh(dashCache.assets))
+  const [assetsLoading, setAssetsLoading] = useState(true)
   const [assetsProgress, setAssetsProgress] = useState<{ loaded: number; total: number } | null>(null)
+  // Facets pre-aggregated server-side via /api/dashboard/facets. Lets us skip
+  // computing them from the full asset list (would otherwise force a full
+  // bulk fetch even when the map panel is collapsed).
+  const [facetsData, setFacetsData] = useState<{
+    vendors: { id: string; name: string; count: number }[]
+    owners: { name: string; count: number }[]
+    groups: { name: string; count: number }[]
+    facilities: { name: string; count: number }[]
+    noVendor: number; noOwner: number; noGroup: number; noFacility: number
+  } | null>(null)
   // Flips true after the dashboard has actually painted at least one frame.
   // Splash holds until then so the user never sees the heavy tree mid-mount.
   const [paintReady, setPaintReady] = useState(false)
@@ -177,6 +213,14 @@ export default function DashboardPage() {
     }
   }, [data, paintReady])
 
+  // Server-aggregated facets — independent of the full asset bulk fetch.
+  useEffect(() => {
+    fetch('/api/dashboard/facets')
+      .then(r => r.json())
+      .then(d => { if (d && !d.error) setFacetsData(d) })
+      .catch(() => {})
+  }, [])
+
   useEffect(() => {
     if (!isFresh(dashCache.summary)) {
       fetch('/api/dashboard/summary')
@@ -200,63 +244,67 @@ export default function DashboardPage() {
     }
   }, [])
 
+  // Delete a dataset (cascades through to its assets via the FK).
+  const handleDeleteDataset = async (ds: { id: number; name: string; feature_count?: number }) => {
+    const count = ds.feature_count ?? 0
+    const msg = `Delete dataset "${ds.name}"${count ? ` and its ${count.toLocaleString()} asset${count === 1 ? '' : 's'}` : ''}?\n\nThis cannot be undone.`
+    if (!confirm(msg)) return
+    setDeletingDatasetId(ds.id)
+    try {
+      const res = await fetch(`/api/datasets/${ds.id}`, { method: 'DELETE' })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body?.error || 'Delete failed')
+      // Drop locally + force-refresh every dashboard surface that depended on it.
+      setDatasets(prev => prev.filter(d => d.id !== ds.id))
+      setAssets(prev => prev.filter(a => a.dataset_id !== ds.id))
+      // Bust caches so the next mount / fetch sees fresh state.
+      dashCache.datasets = undefined as any
+      dashCache.assets = undefined as any
+      dashCache.summary = undefined as any
+      // Re-pull summary + facets since totals changed.
+      fetch('/api/dashboard/summary').then(r => r.json()).then(d => { if (!d?.error) setData(d) }).catch(() => {})
+      fetch('/api/dashboard/facets').then(r => r.json()).then(d => { if (d && !d.error) setFacetsData(d) }).catch(() => {})
+    } catch (err: any) {
+      alert(`Failed to delete dataset: ${err?.message || 'unknown error'}`)
+    } finally {
+      setDeletingDatasetId(null)
+    }
+  }
+
   const datasetNameById = useMemo(() => {
     const m = new Map<number, string>()
     for (const d of datasets) m.set(d.id, d.name)
     return m
   }, [datasets])
 
-  // Progressive asset fetch — first chunk renders the map fast, rest streams.
-  // Splash is already gone by now (it's gated on summary only), so each chunk
-  // arriving causes a non-blocking re-render.
+  // Keyset-paginated slim asset fetch.
+  // Switched from OFFSET pagination to (id > after_id) — each page is O(log N)
+  // regardless of position, and the endpoint strips the heavy `properties`
+  // jsonb (keeps only the keys this page reads). Pages take ~300ms regardless
+  // of how deep we are, vs 5-13s with OFFSET on the full row.
   useEffect(() => {
-    if (isFresh(dashCache.assets)) { setAssetsLoading(false); return }
+    // Always refetch — uploads on other pages don't invalidate dashCache.assets,
+    // so caching this would mean stale empty arrays after an upload.
     let cancelled = false
-    const FIRST_CHUNK = 500
-    const PAGE = 1000
+    const PAGE = 2000
     ;(async () => {
       try {
         setAssetsLoading(true)
-        // First chunk: small + carries the total count.
-        const firstRes = await fetch(`/api/assets?limit=${FIRST_CHUNK}&offset=0&count=true`).then(r => r.json())
-        if (cancelled) return
-        const firstRows: any[] = Array.isArray(firstRes?.data) ? firstRes.data : []
-        const total: number = Number(firstRes?.total) || firstRows.length
-        if (firstRows.length === 0) {
-          setAssetsLoading(false)
-          dashCache.assets = { data: [], ts: Date.now() }
-          return
+        let afterId: number | null = 0
+        let totalKnown = 0
+        while (!cancelled && afterId !== null) {
+          const res = await fetch(`/api/dashboard/asset-rows?after_id=${afterId}&limit=${PAGE}`)
+            .then(r => r.json())
+          if (cancelled) return
+          const rows: any[] = Array.isArray(res?.data) ? res.data : []
+          if (rows.length === 0) { afterId = null; break }
+          totalKnown += rows.length
+          // Append eagerly so the map fills in as we go.
+          setAssets(prev => [...prev, ...rows])
+          setAssetsProgress({ loaded: totalKnown, total: totalKnown + (res?.next_after_id != null ? PAGE : 0) })
+          afterId = (typeof res?.next_after_id === 'number') ? res.next_after_id : null
         }
-        setAssets(firstRows)
-        setAssetsProgress({ loaded: firstRows.length, total })
-
-        // Remaining pages — fetched in parallel, appended in order.
-        const remaining = Math.max(0, total - firstRows.length)
-        if (remaining === 0) {
-          setAssetsLoading(false)
-          dashCache.assets = { data: firstRows, ts: Date.now() }
-          return
-        }
-        const pageCount = Math.ceil(remaining / PAGE)
-        const pages: any[][] = new Array(pageCount)
-        await Promise.all(
-          Array.from({ length: pageCount }, (_, i) => {
-            const offset = FIRST_CHUNK + i * PAGE
-            return fetch(`/api/assets?limit=${PAGE}&offset=${offset}`)
-              .then(r => r.json())
-              .then(json => {
-                if (cancelled) return
-                pages[i] = Array.isArray(json?.data) ? json.data : []
-                // Append this page eagerly; user sees the map populate.
-                setAssets(prev => [...prev, ...pages[i]])
-                setAssetsProgress(p => ({ loaded: (p?.loaded || 0) + pages[i].length, total }))
-              })
-              .catch(() => { pages[i] = [] })
-          }),
-        )
         if (cancelled) return
-        const merged = [firstRows, ...pages].flat()
-        dashCache.assets = { data: merged, ts: Date.now() }
         setAssetsLoading(false)
         setAssetsProgress(null)
       } catch (e) {
@@ -267,45 +315,69 @@ export default function DashboardPage() {
     return () => { cancelled = true }
   }, [])
 
-  // Build map layers from assets + datasets, grouping by route category
+  // Build map layers from assets + datasets — ONE LAYER PER DATASET, matching
+  // exactly what /map renders. We used to bucket by classifyAsset() category
+  // here, which silently dropped lines whose folder/name matched a facility
+  // regex (e.g. a cable in folder "POP Connections" disappeared). One layer
+  // per dataset is identical to /map's behavior.
+  const DATASET_PALETTE = [
+    '#2563eb', '#f59e0b', '#10b981', '#a855f7', '#ef4444', '#06b6d4',
+    '#f97316', '#8b5cf6', '#0ea5e9', '#db2777', '#65a30d', '#be185d',
+  ]
   useEffect(() => {
     if (assets.length === 0) return
+    // Bucket by dataset_id. Unknown dataset → "__no_dataset" bucket.
     const buckets = new Map<string, GeoJSON.Feature[]>()
     for (const a of assets) {
-      const category = classifyAsset(a, datasetNameById)
+      const key = a.dataset_id != null ? String(a.dataset_id) : '__no_dataset'
       const feature: GeoJSON.Feature = {
         type: 'Feature',
         geometry: a.geometry,
         properties: {
           ...a.properties,
           name: a.name || a.properties?.name,
+          _color: a.properties?.__color || a.properties?._color,
           status: a.status,
           operational_status: a.operational_status,
           utilization_pct: a.utilization_pct,
           length_km: a.length_km,
           vendor_id: a.vendor_id,
           total_cost: a.total_cost,
-          __category: category,
         },
       }
-      const arr = buckets.get(category) || []
+      const arr = buckets.get(key) || []
       arr.push(feature)
-      buckets.set(category, arr)
+      buckets.set(key, arr)
     }
     const built: GeoLayer[] = []
     let i = 0
-    for (const [cat, features] of buckets) {
+    for (const [key, features] of buckets) {
+      const ds = key !== '__no_dataset' ? Number(key) : null
+      const name = ds != null ? (datasetNameById.get(ds) || `Dataset #${ds}`) : 'Unassigned'
       built.push({
-        id: String(i++),
-        name: TYPE_LABELS[cat] || cat,
-        color: TYPE_COLORS[cat] || '#64748b',
+        id: String(i),
+        name,
+        color: DATASET_PALETTE[i % DATASET_PALETTE.length],
         visible: true,
         geojson: { type: 'FeatureCollection', features },
         geomType: features[0]?.geometry?.type || 'Unknown',
         count: features.length,
       })
+      i++
     }
     setLayers(built)
+    // Diagnostic — kept so we can quickly see what's in each layer.
+    if (typeof window !== 'undefined') {
+      const stats = built.map(l => {
+        const types: Record<string, number> = {}
+        for (const f of l.geojson.features) {
+          const t = (f.geometry as any)?.type || 'null'
+          types[t] = (types[t] || 0) + 1
+        }
+        return { name: l.name, count: l.count, types }
+      })
+      console.log('[dashboard] map layers (per-dataset):', stats, '| assets:', assets.length)
+    }
   }, [assets, datasetNameById])
 
   const vendorNameMap = useMemo(() => {
@@ -314,10 +386,12 @@ export default function DashboardPage() {
     return m
   }, [vendors])
 
-  // Derive vendor + owner + group + facility facets from loaded assets.
-  // Owner = explicit property match first; if none, fall back to the vendor
-  // name — which is the operator/owner in most telecom GIS datasets.
+  // Derive vendor + owner + group + facility facets.
+  // Prefer the server-side RPC (no bulk asset fetch required). Falls back to
+  // the per-asset scan if the /api/dashboard/facets endpoint hasn't loaded
+  // yet — keeps the page usable during the RPC migration window.
   const facets = useMemo(() => {
+    if (facetsData) return facetsData
     const vMap = new Map<string, { id: string; name: string; count: number }>()
     const oMap = new Map<string, number>()
     const gMap = new Map<string, number>()
@@ -349,7 +423,7 @@ export default function DashboardPage() {
       facilities: Array.from(fMap.entries()).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
       noVendor, noOwner, noGroup, noFacility,
     }
-  }, [assets, vendorNameMap])
+  }, [assets, vendorNameMap, facetsData])
 
   const vendorColorMap = useMemo(() => {
     const m: Record<string, string> = { __none__: '#94a3b8' }
@@ -369,16 +443,12 @@ export default function DashboardPage() {
 
   // Apply route pill — show the selected category + all facility layers,
   // hide everything else. Facilities are always visible so POPs/DCs still render.
-  const filteredLayers = useMemo(() => {
-    if (routeFilter === 'all') return layers
-    return layers.map(l => {
-      // Each layer is named after its category (Owned, Leased, etc.)
-      const key = l.name.toLowerCase().replace(/\s+/g, '')
-      const isFacility = ['pops', 'wirecenters', 'co-lo', 'datacenters'].some(x => key.includes(x.replace(/-/g, '')))
-      const matches = l.name.toLowerCase() === TYPE_LABELS[routeFilter]?.toLowerCase()
-      return { ...l, visible: matches || isFacility }
-    })
-  }, [layers, routeFilter])
+  // Layers are bucketed per-dataset now (matching /map). The legacy
+  // category-pill filter no longer maps to layer names, so we just pass
+  // layers through unchanged. The route-filter pill still acts as a
+  // *feature-level* filter via the `derived` memo when a non-'all' pill is
+  // selected — KPIs reflect it, but the map shows everything.
+  const filteredLayers = layers
 
   // Filtered Cost/Mile and Vendor Costs that respect the map-panel filters
   const filteredCostPerMile = useMemo(() => {
@@ -510,13 +580,20 @@ export default function DashboardPage() {
   const costMin = filteredCostPerMile.length ? Math.min(...filteredCostPerMile.map(r => r.cost_per_mile)) : 0
   const costMax = filteredCostPerMile.length ? Math.max(...filteredCostPerMile.map(r => r.cost_per_mile)) : 1
 
-  // Display values — prefer filter-aware client-side values when available,
-  // otherwise fall back to server aggregation.
-  const activeRoutes = derived?.activeRoutes ?? data.kpis.activeRoutes
-  const totalCost = derived?.totalCost ?? data.kpis.totalCost
-  const coverage = derived?.coverage ?? data.kpis.networkCoveragePct
-  const costPerMile = derived?.costPerMile ?? data.kpis.costPerMile
-  const totalMiles = derived?.totalMiles ?? Math.round(data.kpis.totalLengthKm * 0.621371)
+  // Server KPIs are the source of truth (one SQL pass over the table).
+  // `derived` (client recompute from `assets`) is filter-aware — only prefer
+  // it when the user has actually applied a filter. Otherwise the client
+  // can disagree with the server because `classifyAsset` excludes routes
+  // whose KML folder name matches a facility regex, while the server filters
+  // purely on the `type` column. Using the server value avoids the visible
+  // "20,000 → 878 mi" snap when assets finish streaming in.
+  const filtersActive = hiddenVendors.size > 0 || hiddenOwners.size > 0
+    || hiddenGroups.size > 0 || hiddenFacilities.size > 0 || routeFilter !== 'all'
+  const activeRoutes = filtersActive && derived ? derived.activeRoutes : data.kpis.activeRoutes
+  const totalCost   = filtersActive && derived ? derived.totalCost   : data.kpis.totalCost
+  const coverage    = filtersActive && derived ? derived.coverage    : data.kpis.networkCoveragePct
+  const costPerMile = filtersActive && derived ? derived.costPerMile : data.kpis.costPerMile
+  const totalMiles  = filtersActive && derived ? derived.totalMiles  : Math.round(data.kpis.totalLengthKm * 0.621371)
   const composition = derived?.composition ?? data.composition
   const ownedPct = derived?.ownedPct ?? data.ownedVsLeased.ownedPct
   const leasedPct = derived?.leasedPct ?? data.ownedVsLeased.leasedPct
@@ -689,12 +766,90 @@ export default function DashboardPage() {
                 <div className="flex items-center gap-2">
                   <div className="w-1.5 h-4 rounded-sm bg-gradient-to-b from-blue-500 to-cyan-400" />
                   <div className="text-sm font-semibold text-slate-800">Network Map & Visualization</div>
+                  {/* Inline geometry counters — surfaces "data is here but the
+                     map isn't drawing it" without needing the devtools console. */}
+                  {!mapCollapsed && layers.length > 0 && (() => {
+                    let pts = 0, lines = 0, polys = 0
+                    for (const l of layers) {
+                      if (!l.visible) continue
+                      for (const f of l.geojson.features) {
+                        const t = (f.geometry as any)?.type
+                        if (t === 'Point' || t === 'MultiPoint') pts++
+                        else if (t === 'LineString' || t === 'MultiLineString') lines++
+                        else if (t === 'Polygon' || t === 'MultiPolygon') polys++
+                      }
+                    }
+                    return (
+                      <span className="text-[10px] text-slate-400 ml-1 font-mono">
+                        {lines.toLocaleString()} lines · {pts.toLocaleString()} pts · {polys.toLocaleString()} polys
+                      </span>
+                    )
+                  })()}
                   {mapCollapsed && !mapFullscreen && (
                     <span className="text-[10px] text-slate-400 ml-1">(collapsed)</span>
                   )}
                 </div>
 
                 <div className="flex items-center gap-2">
+                  {/* Datasets management dropdown */}
+                  {!mapCollapsed && (
+                  <div className="relative">
+                    <button
+                      onClick={() => setDatasetsMenuOpen(o => !o)}
+                      className={`px-2.5 py-1 rounded-md text-[11px] font-semibold flex items-center gap-1.5 transition shadow-sm ${
+                        datasetsMenuOpen
+                          ? 'bg-gradient-to-r from-slate-700 to-slate-900 text-white'
+                          : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                      }`}
+                      title="Manage uploaded datasets"
+                    >
+                      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <ellipse cx="12" cy="5" rx="9" ry="3" />
+                        <path d="M3 5v6c0 1.66 4.03 3 9 3s9-1.34 9-3V5" />
+                        <path d="M3 11v6c0 1.66 4.03 3 9 3s9-1.34 9-3v-6" />
+                      </svg>
+                      Datasets
+                      <span className="inline-flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full bg-white text-slate-700 text-[9px] font-bold">
+                        {datasets.length}
+                      </span>
+                    </button>
+                    {datasetsMenuOpen && (
+                      <div className="absolute top-full right-0 mt-1 w-72 bg-white border border-slate-200 rounded-lg shadow-2xl z-[1100] overflow-hidden">
+                        <div className="px-3 py-2 border-b border-slate-100 flex items-center justify-between">
+                          <span className="text-[11px] font-semibold text-slate-700">Uploaded Datasets</span>
+                          <button onClick={() => setDatasetsMenuOpen(false)} className="text-slate-400 hover:text-slate-700">
+                            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 18L18 6M6 6l12 12" /></svg>
+                          </button>
+                        </div>
+                        <div className="max-h-72 overflow-y-auto">
+                          {datasets.length === 0 ? (
+                            <div className="px-3 py-4 text-center text-[11px] text-slate-400">No datasets yet — upload a KML/KMZ/GeoJSON.</div>
+                          ) : (
+                            datasets.map(ds => (
+                              <div key={ds.id} className="flex items-center gap-2 px-3 py-2 border-b border-slate-50 last:border-0 hover:bg-slate-50">
+                                <div className="flex-1 min-w-0">
+                                  <div className="text-[12px] text-slate-800 truncate font-medium" title={ds.name}>{ds.name}</div>
+                                  <div className="text-[10px] text-slate-400 font-mono">
+                                    {(ds.feature_count ?? 0).toLocaleString()} feature{(ds.feature_count ?? 0) === 1 ? '' : 's'} · #{ds.id}
+                                  </div>
+                                </div>
+                                <button
+                                  onClick={() => handleDeleteDataset(ds)}
+                                  disabled={deletingDatasetId === ds.id}
+                                  className="shrink-0 text-[10px] text-red-600 hover:text-white hover:bg-red-600 border border-red-200 hover:border-red-600 rounded px-2 py-1 font-semibold transition disabled:opacity-50 disabled:cursor-wait"
+                                  title="Delete this dataset and all its assets"
+                                >
+                                  {deletingDatasetId === ds.id ? 'Deleting…' : 'Delete'}
+                                </button>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  )}
+
                   {/* Map-panel filters button */}
                   {!mapCollapsed && (
                   <button

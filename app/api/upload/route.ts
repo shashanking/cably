@@ -271,14 +271,26 @@ export async function POST(request: NextRequest) {
       })
     })
 
-    const CHUNK = 500
+    // Smaller chunks to keep each INSERT well under Supabase's 8s
+    // statement_timeout — large geometries (LineStrings with thousands of
+    // coords) make 500-row batches risky on bigger uploads.
+    const CHUNK = 200
+    let inserted = 0
     for (let i = 0; i < rows.length; i += CHUNK) {
-      const { error } = await supabase.from('assets').insert(rows.slice(i, i + CHUNK))
+      const batch = rows.slice(i, i + CHUNK)
+      const { error } = await supabase.from('assets').insert(batch)
       if (error) {
-        console.error('Insert error:', error)
+        // Surface the real Supabase error to the client — guessing is expensive.
+        console.error('[upload] Insert error after', inserted, 'rows:', error)
         await supabase.from('datasets').delete().eq('id', datasetId)
-        return NextResponse.json({ error: 'Failed to insert features' }, { status: 500 })
+        return NextResponse.json({
+          error: `Failed to insert features after ${inserted}/${rows.length}: ${error.message || error.code || 'unknown'}`,
+          code: error.code,
+          hint: error.hint,
+          insertedBeforeFail: inserted,
+        }, { status: 500 })
       }
+      inserted += batch.length
     }
 
     const bbox = bboxRef.current
@@ -294,8 +306,11 @@ export async function POST(request: NextRequest) {
       message: `Imported ${rows.length} features into "${datasetName}"`,
       dataset: { id: datasetId, name: datasetName, feature_count: rows.length },
     })
-  } catch (error) {
-    console.error('Upload error:', error)
-    return NextResponse.json({ error: 'Upload failed' }, { status: 500 })
+  } catch (error: any) {
+    console.error('[upload] Upload error:', error)
+    return NextResponse.json({
+      error: `Upload failed: ${error?.message || 'unknown error'}`,
+      stack: process.env.NODE_ENV === 'development' ? error?.stack : undefined,
+    }, { status: 500 })
   }
 }

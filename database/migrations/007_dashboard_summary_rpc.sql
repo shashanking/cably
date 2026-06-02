@@ -25,93 +25,91 @@ LANGUAGE plpgsql
 STABLE
 AS $$
 DECLARE
-  -- Route-only aggregates
-  total_routes        int;
-  active_routes_n     int;
-  total_length_km     numeric;
-  planned_length_km   numeric;
+  -- All variables use a v_ prefix so they can't collide with column names
+  -- inside SELECT / SUM / etc. (Postgres errors with "ambiguous reference"
+  -- when a PL/pgSQL var shadows a column in the same query.)
+  v_total_routes        int;
+  v_active_routes_n     int;
+  v_total_length_km     numeric;
+  v_planned_length_km   numeric;
 
-  -- All-asset aggregates
-  total_cost          numeric;
+  v_total_cost          numeric;
 
-  -- YoY (route assets only)
-  miles_this_year     numeric;
-  miles_last_year     numeric;
-  cost_this_year      numeric;
-  cost_last_year      numeric;
+  v_miles_this_year     numeric;
+  v_miles_last_year     numeric;
+  v_cost_this_year      numeric;
+  v_cost_last_year      numeric;
 
-  -- Composition derivatives
-  owned_miles         numeric;
-  leased_miles        numeric;
+  v_owned_miles         numeric;
+  v_leased_miles        numeric;
 
-  -- Sub-aggregates assembled as JSON
-  composition_json    json;
-  vendor_costs_json   json;
-  cost_per_mile_json  json;
-  facilities_json     json;
-  plans_json          json;
-  active_plan_json    json;
+  v_composition_json    json;
+  v_vendor_costs_json   json;
+  v_cost_per_mile_json  json;
+  v_facilities_json     json;
+  v_plans_json          json;
+  v_active_plan_json    json;
 
-  result              json;
+  v_result              json;
 
-  -- The set of asset types we treat as "facilities" (matches the Node code).
-  facility_types CONSTANT text[] := ARRAY['pops', 'wirecenters', 'colo', 'datacenters'];
+  -- Asset types we treat as "facilities" (matches the Node code).
+  v_facility_types CONSTANT text[] := ARRAY['pops', 'wirecenters', 'colo', 'datacenters'];
 BEGIN
   -- ── ROUTE KPIs ──────────────────────────────────────────────────────────
   -- A "route" is any asset whose type is non-null and NOT a facility type.
   SELECT
     COUNT(*)::int,
-    COUNT(*) FILTER (WHERE COALESCE(operational_status, 'online') = 'online')::int,
-    COALESCE(SUM(length_km), 0),
-    COALESCE(SUM(length_km) FILTER (WHERE LOWER(COALESCE(status, '')) = 'planned'), 0)
-  INTO total_routes, active_routes_n, total_length_km, planned_length_km
-  FROM assets
-  WHERE type IS NOT NULL
-    AND LOWER(type) <> ALL (facility_types);
+    COUNT(*) FILTER (WHERE COALESCE(a.operational_status, 'online') = 'online')::int,
+    COALESCE(SUM(a.length_km), 0),
+    COALESCE(SUM(a.length_km) FILTER (WHERE LOWER(COALESCE(a.status, '')) = 'planned'), 0)
+  INTO v_total_routes, v_active_routes_n, v_total_length_km, v_planned_length_km
+  FROM assets a
+  WHERE a.type IS NOT NULL
+    AND LOWER(a.type) <> ALL (v_facility_types);
 
   -- ── ALL-ASSET TOTAL COST ────────────────────────────────────────────────
-  SELECT COALESCE(SUM(total_cost), 0) INTO total_cost FROM assets;
+  SELECT COALESCE(SUM(a.total_cost), 0) INTO v_total_cost FROM assets a;
 
   -- ── YoY TRENDS (routes only) ────────────────────────────────────────────
   SELECT
-    COALESCE(SUM(length_km)  FILTER (WHERE created_at >= NOW() - INTERVAL '1 year'), 0),
-    COALESCE(SUM(length_km)  FILTER (WHERE created_at >= NOW() - INTERVAL '2 year'
-                                       AND created_at <  NOW() - INTERVAL '1 year'), 0),
-    COALESCE(SUM(total_cost) FILTER (WHERE created_at >= NOW() - INTERVAL '1 year'), 0),
-    COALESCE(SUM(total_cost) FILTER (WHERE created_at >= NOW() - INTERVAL '2 year'
-                                       AND created_at <  NOW() - INTERVAL '1 year'), 0)
-  INTO miles_this_year, miles_last_year, cost_this_year, cost_last_year
-  FROM assets
-  WHERE type IS NOT NULL
-    AND LOWER(type) <> ALL (facility_types);
+    COALESCE(SUM(a.length_km)  FILTER (WHERE a.created_at >= NOW() - INTERVAL '1 year'), 0),
+    COALESCE(SUM(a.length_km)  FILTER (WHERE a.created_at >= NOW() - INTERVAL '2 year'
+                                         AND a.created_at <  NOW() - INTERVAL '1 year'), 0),
+    COALESCE(SUM(a.total_cost) FILTER (WHERE a.created_at >= NOW() - INTERVAL '1 year'), 0),
+    COALESCE(SUM(a.total_cost) FILTER (WHERE a.created_at >= NOW() - INTERVAL '2 year'
+                                         AND a.created_at <  NOW() - INTERVAL '1 year'), 0)
+  INTO v_miles_this_year, v_miles_last_year, v_cost_this_year, v_cost_last_year
+  FROM assets a
+  WHERE a.type IS NOT NULL
+    AND LOWER(a.type) <> ALL (v_facility_types);
 
   -- ── COMPOSITION (route type → miles/count/share) ────────────────────────
   SELECT COALESCE(json_agg(row_to_json(c) ORDER BY c.miles DESC), '[]'::json)
-  INTO composition_json
+  INTO v_composition_json
   FROM (
     SELECT
-      LOWER(type) AS type,
-      ROUND(SUM(COALESCE(length_km, 0))::numeric * 10) / 10 AS miles,
+      LOWER(a.type) AS type,
+      ROUND(SUM(COALESCE(a.length_km, 0))::numeric * 10) / 10 AS miles,
       COUNT(*)::int AS count,
-      CASE WHEN total_length_km > 0
-           THEN ROUND(SUM(COALESCE(length_km, 0))::numeric / total_length_km * 1000) / 10
+      CASE WHEN v_total_length_km > 0
+           THEN ROUND(SUM(COALESCE(a.length_km, 0))::numeric / v_total_length_km * 1000) / 10
            ELSE 0 END AS share
-    FROM assets
-    WHERE type IS NOT NULL
-      AND LOWER(type) <> ALL (facility_types)
-    GROUP BY LOWER(type)
+    FROM assets a
+    WHERE a.type IS NOT NULL
+      AND LOWER(a.type) <> ALL (v_facility_types)
+    GROUP BY LOWER(a.type)
   ) c;
 
   -- ── OWNED vs LEASED (derived from composition) ──────────────────────────
   SELECT
-    COALESCE(SUM(length_km) FILTER (WHERE LOWER(COALESCE(type, '')) = 'owned'),  0),
-    COALESCE(SUM(length_km) FILTER (WHERE LOWER(COALESCE(type, '')) = 'leased'), 0)
-  INTO owned_miles, leased_miles
-  FROM assets;
+    COALESCE(SUM(a.length_km) FILTER (WHERE LOWER(COALESCE(a.type, '')) = 'owned'),  0),
+    COALESCE(SUM(a.length_km) FILTER (WHERE LOWER(COALESCE(a.type, '')) = 'leased'), 0)
+  INTO v_owned_miles, v_leased_miles
+  FROM assets a;
 
   -- ── VENDOR COSTS (top 8 by cost) ────────────────────────────────────────
   SELECT COALESCE(json_agg(row_to_json(v) ORDER BY v.cost DESC), '[]'::json)
-  INTO vendor_costs_json
+  INTO v_vendor_costs_json
   FROM (
     SELECT
       COALESCE(ven.name, 'Vendor #' || a.vendor_id) AS name,
@@ -127,7 +125,7 @@ BEGIN
 
   -- ── COST PER MILE (top 8 routes) ────────────────────────────────────────
   SELECT COALESCE(json_agg(row_to_json(cpm) ORDER BY cpm.cost_per_mile DESC), '[]'::json)
-  INTO cost_per_mile_json
+  INTO v_cost_per_mile_json
   FROM (
     SELECT
       a.id,
@@ -146,7 +144,7 @@ BEGIN
     FROM assets a
     LEFT JOIN vendors ven ON ven.id = a.vendor_id
     WHERE a.type IS NOT NULL
-      AND LOWER(a.type) <> ALL (facility_types)
+      AND LOWER(a.type) <> ALL (v_facility_types)
       AND a.length_km IS NOT NULL
       AND a.length_km > 0
       AND (a.total_cost IS NOT NULL OR a.cost_per_km IS NOT NULL)
@@ -156,30 +154,30 @@ BEGIN
 
   -- ── FACILITIES (per facility type) ──────────────────────────────────────
   SELECT COALESCE(json_agg(row_to_json(f)), '[]'::json)
-  INTO facilities_json
+  INTO v_facilities_json
   FROM (
     SELECT
-      LOWER(type) AS type,
+      LOWER(a.type) AS type,
       COUNT(*)::int AS total,
-      COUNT(*) FILTER (WHERE COALESCE(operational_status, 'online') = 'online')::int AS online,
-      COUNT(*) FILTER (WHERE operational_status = 'offline')::int AS offline,
-      COUNT(*) FILTER (WHERE operational_status IS NOT NULL
-                         AND operational_status NOT IN ('online','offline'))::int AS warning,
-      COALESCE(ROUND(AVG(capacity_pct))::int,    0) AS capacity,
-      COALESCE(ROUND(AVG(utilization_pct))::int, 0) AS utilization
-    FROM assets
-    WHERE type IS NOT NULL
-      AND LOWER(type) = ANY (facility_types)
-    GROUP BY LOWER(type)
+      COUNT(*) FILTER (WHERE COALESCE(a.operational_status, 'online') = 'online')::int AS online,
+      COUNT(*) FILTER (WHERE a.operational_status = 'offline')::int AS offline,
+      COUNT(*) FILTER (WHERE a.operational_status IS NOT NULL
+                         AND a.operational_status NOT IN ('online','offline'))::int AS warning,
+      COALESCE(ROUND(AVG(a.capacity_pct))::int,    0) AS capacity,
+      COALESCE(ROUND(AVG(a.utilization_pct))::int, 0) AS utilization
+    FROM assets a
+    WHERE a.type IS NOT NULL
+      AND LOWER(a.type) = ANY (v_facility_types)
+    GROUP BY LOWER(a.type)
   ) f;
 
   -- ── PLANS ────────────────────────────────────────────────────────────────
   SELECT COALESCE(json_agg(row_to_json(p) ORDER BY p.target_year ASC), '[]'::json)
-  INTO plans_json
+  INTO v_plans_json
   FROM plans p;
 
   -- Active plan: first plan with target_year >= current year, else earliest.
-  SELECT row_to_json(p) INTO active_plan_json
+  SELECT row_to_json(p) INTO v_active_plan_json
   FROM (
     SELECT *
     FROM plans
@@ -188,58 +186,58 @@ BEGIN
     LIMIT 1
   ) p;
 
-  IF active_plan_json IS NULL THEN
-    SELECT row_to_json(p) INTO active_plan_json
+  IF v_active_plan_json IS NULL THEN
+    SELECT row_to_json(p) INTO v_active_plan_json
     FROM (SELECT * FROM plans ORDER BY target_year ASC LIMIT 1) p;
   END IF;
 
   -- ── ASSEMBLE FINAL JSON ──────────────────────────────────────────────────
-  result := json_build_object(
+  v_result := json_build_object(
     'generatedAt', to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
     'kpis', json_build_object(
       'networkCoveragePct',
-        CASE WHEN total_routes > 0
-             THEN ROUND(active_routes_n::numeric / total_routes * 1000) / 10
+        CASE WHEN v_total_routes > 0
+             THEN ROUND(v_active_routes_n::numeric / v_total_routes * 1000) / 10
              ELSE 0 END,
-      'activeRoutes',  active_routes_n,
-      'totalCost',     ROUND(total_cost)::bigint,
-      'totalLengthKm', ROUND(total_length_km * 10) / 10,
-      'plannedLengthKm', ROUND(planned_length_km * 10) / 10,
+      'activeRoutes',  v_active_routes_n,
+      'totalCost',     ROUND(v_total_cost)::bigint,
+      'totalLengthKm', ROUND(v_total_length_km * 10) / 10,
+      'plannedLengthKm', ROUND(v_planned_length_km * 10) / 10,
       'costPerMile',
-        CASE WHEN total_length_km > 0
-             THEN ROUND(total_cost / (total_length_km * 0.621371))::bigint
+        CASE WHEN v_total_length_km > 0
+             THEN ROUND(v_total_cost / (v_total_length_km * 0.621371))::bigint
              ELSE 0 END
     ),
     'trends', json_build_object(
       'milesYoyPct',
-        CASE WHEN miles_last_year > 0
-             THEN ROUND((miles_this_year - miles_last_year) / miles_last_year * 1000) / 10
+        CASE WHEN v_miles_last_year > 0
+             THEN ROUND((v_miles_this_year - v_miles_last_year) / v_miles_last_year * 1000) / 10
              ELSE NULL END,
       'costYoyPct',
-        CASE WHEN cost_last_year > 0
-             THEN ROUND((cost_this_year - cost_last_year) / cost_last_year * 1000) / 10
+        CASE WHEN v_cost_last_year > 0
+             THEN ROUND((v_cost_this_year - v_cost_last_year) / v_cost_last_year * 1000) / 10
              ELSE NULL END,
-      'milesAddedYtd', ROUND(miles_this_year * 0.621371)::bigint
+      'milesAddedYtd', ROUND(v_miles_this_year * 0.621371)::bigint
     ),
-    'composition',   composition_json,
+    'composition',   v_composition_json,
     'ownedVsLeased', json_build_object(
       'ownedPct',
-        CASE WHEN total_length_km > 0
-             THEN ROUND(owned_miles / total_length_km * 1000) / 10
+        CASE WHEN v_total_length_km > 0
+             THEN ROUND(v_owned_miles / v_total_length_km * 1000) / 10
              ELSE 0 END,
       'leasedPct',
-        CASE WHEN total_length_km > 0
-             THEN ROUND(leased_miles / total_length_km * 1000) / 10
+        CASE WHEN v_total_length_km > 0
+             THEN ROUND(v_leased_miles / v_total_length_km * 1000) / 10
              ELSE 0 END
     ),
-    'vendorCosts',   vendor_costs_json,
-    'costPerMile',   cost_per_mile_json,
-    'facilities',    facilities_json,
-    'activePlan',    active_plan_json,
-    'plans',         plans_json
+    'vendorCosts',   v_vendor_costs_json,
+    'costPerMile',   v_cost_per_mile_json,
+    'facilities',    v_facilities_json,
+    'activePlan',    v_active_plan_json,
+    'plans',         v_plans_json
   );
 
-  RETURN result;
+  RETURN v_result;
 END;
 $$;
 

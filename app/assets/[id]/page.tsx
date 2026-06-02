@@ -52,6 +52,14 @@ function formatCurrency(value: number | null) {
   return '$' + value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
+// Length-bearing geometries — LineStrings (and multi-) need length + per-km
+// cost fields. Points/Polygons get a simpler "total cost only" form because
+// length isn't meaningful for them.
+function isLengthGeom(geom: any): boolean {
+  if (!geom?.type) return false
+  return geom.type === 'LineString' || geom.type === 'MultiLineString'
+}
+
 export default function AssetDetailPage() {
   const params = useParams<{ id: string }>()
   const router = useRouter()
@@ -137,14 +145,25 @@ export default function AssetDetailPage() {
     e.preventDefault()
     setSaving(true)
     try {
+      const lineLike = isLengthGeom(asset?.geometry)
+      // Lines: keep length + per-km cost, auto-derive total when blank.
+      // Non-lines (point/polygon): only total_cost makes sense — strip the
+      // length/per-km fields so we don't carry stale numbers from older data.
+      const costPerKm = lineLike && form.cost_per_km ? Number(form.cost_per_km) : null
+      const lengthKm  = lineLike && form.length_km  ? Number(form.length_km)  : null
+      let totalCost = form.total_cost ? Number(form.total_cost) : null
+      if (lineLike && totalCost == null && costPerKm != null && lengthKm != null) {
+        totalCost = Math.round(costPerKm * lengthKm * 100) / 100
+      }
+
       const payload: Record<string, unknown> = {
         name: form.name.trim() || null,
         type: form.type,
         status: form.status || null,
         vendor_id: form.vendor_id ? Number(form.vendor_id) : null,
-        cost_per_km: form.cost_per_km ? Number(form.cost_per_km) : null,
-        total_cost: form.total_cost ? Number(form.total_cost) : null,
-        length_km: form.length_km ? Number(form.length_km) : null,
+        cost_per_km: costPerKm,
+        total_cost: totalCost,
+        length_km: lengthKm,
         operational_status: form.operational_status || null,
         utilization_pct: form.utilization_pct !== '' ? Number(form.utilization_pct) : null,
         capacity_pct: form.capacity_pct !== '' ? Number(form.capacity_pct) : null,
@@ -355,47 +374,85 @@ export default function AssetDetailPage() {
                 </select>
               </div>
 
-              {/* Cost Per KM */}
-              <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1.5">Cost per km ($)</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={form.cost_per_km}
-                  onChange={e => setForm(f => ({ ...f, cost_per_km: e.target.value }))}
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
-                  placeholder="0.00"
-                />
-              </div>
+              {/* Cost fields — shape depends on geometry. Lines carry
+                 length + per-km cost (total auto-derived); points just total. */}
+              {isLengthGeom(asset?.geometry) ? (
+                <>
+                  {/* Length KM (lines only) */}
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 mb-1.5">Length (km)</label>
+                    <input
+                      type="number"
+                      step="0.001"
+                      min="0"
+                      value={form.length_km}
+                      onChange={e => setForm(f => ({ ...f, length_km: e.target.value }))}
+                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                      placeholder="0.000"
+                    />
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      {form.length_km && !isNaN(Number(form.length_km))
+                        ? `${(Number(form.length_km) * 0.621371).toFixed(2)} mi`
+                        : 'Auto-computed from geometry on upload.'}
+                    </p>
+                  </div>
 
-              {/* Total Cost */}
-              <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1.5">Total Cost ($)</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={form.total_cost}
-                  onChange={e => setForm(f => ({ ...f, total_cost: e.target.value }))}
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
-                  placeholder="0.00"
-                />
-              </div>
+                  {/* Cost per km (lines only) */}
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 mb-1.5">Cost per km ($)</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={form.cost_per_km}
+                      onChange={e => setForm(f => ({ ...f, cost_per_km: e.target.value }))}
+                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                      placeholder="0.00"
+                    />
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      Multiplied by length to auto-fill total cost (if total is empty on save).
+                    </p>
+                  </div>
 
-              {/* Length KM */}
-              <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1.5">Length (km)</label>
-                <input
-                  type="number"
-                  step="0.001"
-                  min="0"
-                  value={form.length_km}
-                  onChange={e => setForm(f => ({ ...f, length_km: e.target.value }))}
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
-                  placeholder="0.000"
-                />
-              </div>
+                  {/* Total cost — optional override; computed if blank */}
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 mb-1.5">Total Cost ($)</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={form.total_cost}
+                      onChange={e => setForm(f => ({ ...f, total_cost: e.target.value }))}
+                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                      placeholder={
+                        form.cost_per_km && form.length_km
+                          ? (Number(form.cost_per_km) * Number(form.length_km)).toFixed(2)
+                          : '0.00'
+                      }
+                    />
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      Leave blank to auto-compute from cost/km × length.
+                    </p>
+                  </div>
+                </>
+              ) : (
+                /* Point / polygon — only Total Cost makes sense. */
+                <div className="sm:col-span-2 lg:col-span-3">
+                  <label className="block text-xs font-medium text-slate-700 mb-1.5">Total Cost ($)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={form.total_cost}
+                    onChange={e => setForm(f => ({ ...f, total_cost: e.target.value }))}
+                    className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                    placeholder="0.00"
+                  />
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    Length / cost-per-km fields are hidden — this is a {asset?.geometry?.type || 'point'} asset.
+                  </p>
+                </div>
+              )}
 
               {/* Operational Status */}
               <div>

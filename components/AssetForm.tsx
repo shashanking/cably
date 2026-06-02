@@ -12,7 +12,7 @@ export default function AssetForm({ onAssetAdded }: AssetFormProps) {
   const [vendorId, setVendorId] = useState('')
   const [lat, setLat] = useState('')
   const [lng, setLng] = useState('')
-  const [costPerKm, setCostPerKm] = useState('')
+  const [totalCost, setTotalCost] = useState('')
   const [vendors, setVendors] = useState<Vendor[]>([])
   const [message, setMessage] = useState('')
   const [messageType, setMessageType] = useState<'success' | 'error'>('success')
@@ -36,7 +36,9 @@ export default function AssetForm({ onAssetAdded }: AssetFormProps) {
           name: name || null,
           status,
           vendor_id: vendorId ? Number(vendorId) : null,
-          cost_per_km: costPerKm ? Number(costPerKm) : null,
+          // Points have no length, so we only ship total_cost. cost_per_km
+          // is meaningless here and the upload route would copy it as-is.
+          total_cost: totalCost ? Number(totalCost) : null,
           properties: { name },
           geometry: { type: 'Point', coordinates: [longitude, latitude] },
         })
@@ -44,7 +46,7 @@ export default function AssetForm({ onAssetAdded }: AssetFormProps) {
       const result = await res.json()
       if (res.ok) {
         setMessage('Asset created successfully'); setMessageType('success')
-        setName(''); setLat(''); setLng(''); setVendorId(''); setCostPerKm('')
+        setName(''); setLat(''); setLng(''); setVendorId(''); setTotalCost('')
         onAssetAdded?.()
       } else { setMessage(result.error || 'Failed'); setMessageType('error') }
     } catch { setMessage('Failed to create asset'); setMessageType('error') }
@@ -98,8 +100,9 @@ export default function AssetForm({ onAssetAdded }: AssetFormProps) {
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="flex flex-col gap-1">
-          <span className="text-xs font-medium text-slate-600">Cost per km ($)</span>
-          <input value={costPerKm} onChange={e => setCostPerKm(e.target.value)} placeholder="0.00" type="number" step="0.01" className={cls} />
+          <span className="text-xs font-medium text-slate-600">Total Cost ($)</span>
+          <input value={totalCost} onChange={e => setTotalCost(e.target.value)} placeholder="0.00" type="number" step="0.01" className={cls} />
+          <span className="text-[10px] text-slate-400">Points carry only a total cost — no length / cost-per-km.</span>
         </label>
       </div>
       <div className="flex items-center gap-3 pt-1">
