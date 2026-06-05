@@ -503,7 +503,14 @@ export default function ArcGISMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [zoomTarget?.tick, status])
 
-  // Highlight the selected feature
+  // Highlight the selected feature.
+  // Two visual modes:
+  //  - Single feature  → bold blue outline / thick stroke / blue-tinted fill.
+  //    Drawn on top of the layer (zIndex via add order). Communicates "this
+  //    one thing".
+  //  - Whole layer (synthetic feature carrying `properties.__layerSelection`)
+  //    → softer amber glow + thinner stroke, lower opacity. Wouldn't obscure
+  //    the underlying colors. Communicates "all of this group is selected".
   useEffect(() => {
     if (status !== 'ready') return
     const highlightLayer = highlightLayerRef.current
@@ -511,17 +518,30 @@ export default function ArcGISMap({
     ;(async () => {
       highlightLayer.removeAll()
       if (!selectedFeature?.geometry) return
+      const isLayer = (selectedFeature.properties as any)?.__layerSelection === true
       const { default: Graphic } = await amdRequire<any>('esri/Graphic')
+
+      // Symbol palettes per mode.
+      const FEATURE = {
+        point:   { type: 'simple-marker', style: 'circle', color: [255, 255, 255, 0], size: 22, outline: { color: [37, 99, 235, 1], width: 3 } },
+        line:    { type: 'simple-line', color: [37, 99, 235, 1], width: 6, cap: 'round', join: 'round' },
+        polygon: { type: 'simple-fill', color: [37, 99, 235, 0.15], outline: { color: [37, 99, 235, 1], width: 3 } },
+      } as const
+      const LAYER = {
+        // Amber glow around each point, no fill — keeps the original marker color visible.
+        point:   { type: 'simple-marker', style: 'circle', color: [255, 255, 255, 0], size: 16, outline: { color: [245, 158, 11, 0.85], width: 2 } },
+        // Thinner dashed amber overlay so the underlying line color reads through.
+        line:    { type: 'simple-line', color: [245, 158, 11, 0.8], width: 3, style: 'short-dash', cap: 'round', join: 'round' },
+        // Light amber tint with dashed border.
+        polygon: { type: 'simple-fill', color: [245, 158, 11, 0.08], outline: { color: [245, 158, 11, 0.85], width: 2, style: 'dash' } },
+      } as const
+      const palette = isLayer ? LAYER : FEATURE
+
       for (const piece of explodeGeom(selectedFeature.geometry)) {
-        let symbol: any
-        if (piece.kind === 'point') {
-          symbol = { type: 'simple-marker', style: 'circle', color: [255, 255, 255, 0], size: 22, outline: { color: [37, 99, 235, 1], width: 3 } }
-        } else if (piece.kind === 'line') {
-          symbol = { type: 'simple-line', color: [37, 99, 235, 1], width: 6, cap: 'round', join: 'round' }
-        } else {
-          symbol = { type: 'simple-fill', color: [37, 99, 235, 0.15], outline: { color: [37, 99, 235, 1], width: 3 } }
-        }
-        highlightLayer.add(new Graphic({ geometry: piece.esriGeom, symbol }))
+        const symbol = piece.kind === 'point' ? palette.point
+          : piece.kind === 'line' ? palette.line
+          : palette.polygon
+        highlightLayer.add(new Graphic({ geometry: piece.esriGeom, symbol: symbol as any }))
       }
     })()
   }, [selectedFeature, status])

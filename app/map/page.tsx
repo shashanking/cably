@@ -166,12 +166,50 @@ export default function Home() {
   const [selectedFeature, setSelectedFeature] = useState<GeoJSON.Feature | null>(null)
   const [zoomTarget, setZoomTarget] = useState<{ bbox: [number, number, number, number]; tick: number } | null>(null)
   const zoomTickRef = useRef(0)
+  // Track which layer (if any) is currently "selected" via the 🎯 button.
+  // Drives sidebar row highlighting + the on-map feature highlight.
+  const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null)
 
   const zoomToLayer = useCallback((layer: LayerData) => {
+    // Toggle: clicking 🎯 on the already-selected layer clears the selection
+    // and the on-map highlight (but leaves the camera where it is).
+    if (selectedLayerId === layer.id) {
+      setSelectedLayerId(null)
+      setSelectedFeature(null)
+      return
+    }
     const box = bboxOf(layer.geojson)
     if (!box) return
     zoomTickRef.current += 1
     setZoomTarget({ bbox: box, tick: zoomTickRef.current })
+    setSelectedLayerId(layer.id)
+    // Highlight every feature in the layer as "selected". A synthetic Feature
+    // whose geometry is a GeometryCollection of all the layer's geometries
+    // makes ArcGISMap's highlight effect render the blue outline/stroke on
+    // each piece (explodeGeom recurses into GeometryCollection).
+    const geometries = layer.geojson.features
+      .map(f => f.geometry)
+      .filter(Boolean) as GeoJSON.Geometry[]
+    if (geometries.length === 0) { setSelectedFeature(null); return }
+    setSelectedFeature({
+      type: 'Feature',
+      geometry: { type: 'GeometryCollection', geometries },
+      properties: { __layerName: layer.name, __layerSelection: true },
+    } as GeoJSON.Feature)
+  }, [selectedLayerId])
+
+  // Zoom to a single feature (used when an attribute-table row is clicked
+  // or when global search picks a result). Computes the feature's own bbox
+  // and bumps the tick so ArcGISMap re-fires goTo() even on repeat clicks.
+  const zoomToFeature = useCallback((feature: GeoJSON.Feature) => {
+    if (!feature?.geometry) return
+    const box = bboxOf({ type: 'FeatureCollection', features: [feature] })
+    if (!box) return
+    zoomTickRef.current += 1
+    setZoomTarget({ bbox: box, tick: zoomTickRef.current })
+    // Selecting one feature breaks the "whole-layer selected" semantics —
+    // clear it so the sidebar row goes back to the unselected style.
+    setSelectedLayerId(null)
   }, [])
   const [toasts, setToasts] = useState<ToastItem[]>([])
   const [attrTable, setAttrTable] = useState<{ layerId: string; layerName: string } | null>(null)
@@ -486,7 +524,7 @@ export default function Home() {
           {searchResults && (
             <div className="mt-1 max-h-48 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg">
               {searchResults.length === 0 ? <div className="px-3 py-2 text-xs text-slate-400">No results</div> : searchResults.map((r, i) => (
-                <div key={i} onClick={() => { setFeatureInfo({ feature: r.feature, color: r.color, layerId: r.layerId, layerName: r.layerName }); setSelectedFeature(r.feature); setGlobalSearch('') }} className="px-3 py-1.5 text-xs cursor-pointer hover:bg-blue-50 border-b border-slate-100 last:border-b-0 flex items-center gap-2">
+                <div key={i} onClick={() => { setFeatureInfo({ feature: r.feature, color: r.color, layerId: r.layerId, layerName: r.layerName }); setSelectedFeature(r.feature); zoomToFeature(r.feature); setGlobalSearch('') }} className="px-3 py-1.5 text-xs cursor-pointer hover:bg-blue-50 border-b border-slate-100 last:border-b-0 flex items-center gap-2">
                   <span className="w-2 h-2 rounded-full shrink-0" style={{ background: r.color }} />
                   <span className="font-medium text-slate-800 truncate">{(r.feature.properties as any)?.name || 'Unnamed'}</span>
                   <span className="text-slate-400 ml-auto text-[10px] shrink-0">{r.layerName}</span>
@@ -568,7 +606,7 @@ export default function Home() {
                   </div>
                   {g.expanded && g.layers.map(l => {
                     const gb = geomBadge(l.geomType)
-                    return <LayerRow key={l.id} layer={l} gb={gb} onToggle={() => toggleLayer(l.id)} onRemove={() => removeLayer(l.id)} onColorChange={c => changeLayerColor(l.id, c)} onApplyFill={(f, m) => applyFillAttr(l.id, f, m)} onResetFill={() => resetFillAttr(l.id)} onOpenTable={() => setAttrTable({ layerId: l.id, layerName: l.name })} onZoom={() => zoomToLayer(l)} fields={getLayerFields(l)} />
+                    return <LayerRow key={l.id} layer={l} gb={gb} isSelected={selectedLayerId === l.id} onToggle={() => toggleLayer(l.id)} onRemove={() => removeLayer(l.id)} onColorChange={c => changeLayerColor(l.id, c)} onApplyFill={(f, m) => applyFillAttr(l.id, f, m)} onResetFill={() => resetFillAttr(l.id)} onOpenTable={() => setAttrTable({ layerId: l.id, layerName: l.name })} onZoom={() => zoomToLayer(l)} fields={getLayerFields(l)} />
                   })}
                 </div>
               ))}
@@ -612,7 +650,7 @@ export default function Home() {
             filter={mapFilter}
             zoomTarget={zoomTarget}
             onRenderProgress={onRenderProgress}
-            onFeatureClick={(f, c, ln) => { const layer = allLayers.find(l => l.geojson.features.includes(f)); setFeatureInfo({ feature: f, color: c, layerId: layer?.id || '', layerName: ln || layer?.name || '' }); setSelectedFeature(f) }}
+            onFeatureClick={(f, c, ln) => { const layer = allLayers.find(l => l.geojson.features.includes(f)); setFeatureInfo({ feature: f, color: c, layerId: layer?.id || '', layerName: ln || layer?.name || '' }); setSelectedFeature(f); setSelectedLayerId(null) }}
           />
           <MapLoadingOverlay state={loadState} onDismiss={() => setLoadState(s => ({ ...s, stage: 'idle' }))} />
           {/* Layer color legend - always visible when layers loaded */}
@@ -625,7 +663,7 @@ export default function Home() {
         {featureInfo && <FeaturePanel info={featureInfo} onClose={() => setFeatureInfo(null)} />}
 
         {/* Attribute table */}
-        {attrTable && <AttributeTable layerId={attrTable.layerId} layerName={attrTable.layerName} layer={findLayer(attrTable.layerId) || null} onClose={() => setAttrTable(null)} onSelectFeature={(f, c) => { setFeatureInfo({ feature: f, color: c, layerId: attrTable.layerId, layerName: attrTable.layerName }); setSelectedFeature(f) }} />}
+        {attrTable && <AttributeTable layerId={attrTable.layerId} layerName={attrTable.layerName} layer={findLayer(attrTable.layerId) || null} onClose={() => setAttrTable(null)} onSelectFeature={(f, c) => { setFeatureInfo({ feature: f, color: c, layerId: attrTable.layerId, layerName: attrTable.layerName }); setSelectedFeature(f); zoomToFeature(f) }} />}
 
         {/* Status bar */}
         <div className="h-6 bg-white border-t border-slate-200 flex items-center px-3 gap-4 shrink-0 text-[10px] text-slate-400 font-mono">
@@ -641,15 +679,15 @@ export default function Home() {
 }
 
 /* ── LAYER ROW ── */
-function LayerRow({ layer, gb, onToggle, onRemove, onColorChange, onApplyFill, onResetFill, onOpenTable, onZoom, fields }: { layer: LayerData; gb: { cls: string; txt: string }; onToggle: () => void; onRemove: () => void; onColorChange: (c: string) => void; onApplyFill: (f: string, m: 'categorical' | 'graduated') => void; onResetFill: () => void; onOpenTable: () => void; onZoom: () => void; fields: string[] }) {
+function LayerRow({ layer, gb, isSelected, onToggle, onRemove, onColorChange, onApplyFill, onResetFill, onOpenTable, onZoom, fields }: { layer: LayerData; gb: { cls: string; txt: string }; isSelected: boolean; onToggle: () => void; onRemove: () => void; onColorChange: (c: string) => void; onApplyFill: (f: string, m: 'categorical' | 'graduated') => void; onResetFill: () => void; onOpenTable: () => void; onZoom: () => void; fields: string[] }) {
   const [attrOpen, setAttrOpen] = useState(false)
   const [selField, setSelField] = useState(layer.fillAttr || '')
   const [selMode, setSelMode] = useState<'categorical' | 'graduated'>('categorical')
   const colorRef = useRef<HTMLInputElement>(null)
 
   return (
-    <div className="border-t border-slate-100">
-      <div className="px-3 py-2 flex items-center gap-2 hover:bg-slate-50/50 transition-colors">
+    <div className={`border-t ${isSelected ? 'border-l-2 border-l-blue-500 bg-blue-50/40 border-blue-100' : 'border-slate-100'}`}>
+      <div className={`px-3 py-2 flex items-center gap-2 transition-colors ${isSelected ? 'hover:bg-blue-50/60' : 'hover:bg-slate-50/50'}`}>
         <div className="w-4 h-4 rounded-full shrink-0 cursor-pointer border-2 border-white shadow-sm hover:scale-125 transition-transform relative" style={{ background: layer.color }} onClick={() => colorRef.current?.click()}>
           <input ref={colorRef} type="color" value={layer.color} onChange={e => onColorChange(e.target.value)} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" />
         </div>
@@ -657,7 +695,15 @@ function LayerRow({ layer, gb, onToggle, onRemove, onColorChange, onApplyFill, o
         <span className="flex-1 text-xs text-slate-700 truncate font-medium" title={layer.name}>{layer.name}</span>
         <span className="text-[10px] text-slate-400 font-mono">{layer.count}</span>
         <div className="flex gap-0.5 shrink-0">
-          <button onClick={onZoom} className="w-6 h-6 rounded-md flex items-center justify-center text-[10px] bg-slate-100 text-slate-500 hover:bg-emerald-50 hover:text-emerald-600 transition-colors" title="Zoom to layer">🎯</button>
+          <button
+            onClick={onZoom}
+            className={`w-6 h-6 rounded-md flex items-center justify-center text-[10px] transition-colors ${
+              isSelected
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'bg-slate-100 text-slate-500 hover:bg-emerald-50 hover:text-emerald-600'
+            }`}
+            title={isSelected ? 'Click to deselect layer' : 'Zoom to & select layer'}
+          >🎯</button>
           <button onClick={onOpenTable} className="w-6 h-6 rounded-md flex items-center justify-center text-[10px] bg-slate-100 text-slate-500 hover:bg-blue-50 hover:text-blue-600 transition-colors" title="Attribute Table">📋</button>
           <button onClick={() => setAttrOpen(!attrOpen)} className={`w-6 h-6 rounded-md flex items-center justify-center text-[10px] transition-colors ${layer.fillAttr ? 'bg-violet-100 text-violet-600' : 'bg-slate-100 text-slate-500 hover:bg-violet-50 hover:text-violet-600'}`} title="Style by Attribute">🎨</button>
           <button onClick={onToggle} className={`w-6 h-6 rounded-md flex items-center justify-center text-[10px] transition-colors ${layer.visible ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-400'}`}>{layer.visible ? '👁' : '—'}</button>
