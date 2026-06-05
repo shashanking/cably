@@ -147,6 +147,7 @@ export default function ArcGISMap({
   filter,
   onRenderProgress,
   compact,
+  zoomTarget,
 }: {
   layers: GeoLayer[]
   onFeatureClick?: (feature: GeoJSON.Feature, color: string, layerName: string) => void
@@ -155,6 +156,8 @@ export default function ArcGISMap({
   onRenderProgress?: (p: RenderProgress) => void
   /** Hide the AGOL + basemap controls for use as a thumbnail / embedded preview */
   compact?: boolean
+  /** Imperative zoom — bumping `tick` re-fires goTo() even if bbox is unchanged. */
+  zoomTarget?: { bbox: [number, number, number, number]; tick: number } | null
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<any>(null)
@@ -481,6 +484,24 @@ export default function ArcGISMap({
       }
     })()
   }, [layers, filter, status])
+
+  // Imperative zoom-to-bbox — used by the sidebar layer rows.
+  // The tick lets callers retrigger the same bbox (e.g. clicking the zoom
+  // button twice on the same layer after panning away).
+  useEffect(() => {
+    if (status !== 'ready' || !zoomTarget?.bbox) return
+    ;(async () => {
+      const view = viewRef.current
+      if (!view) return
+      const { default: Extent } = await amdRequire<any>('esri/geometry/Extent')
+      const [xmin, ymin, xmax, ymax] = zoomTarget.bbox
+      if (![xmin, ymin, xmax, ymax].every(Number.isFinite)) return
+      const extent = new Extent({ xmin, ymin, xmax, ymax, spatialReference: { wkid: 4326 } })
+      // Point-only layers collapse to a 0-area extent; expand handles that.
+      view.goTo(extent.expand(1.4)).catch(() => {})
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [zoomTarget?.tick, status])
 
   // Highlight the selected feature
   useEffect(() => {

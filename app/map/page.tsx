@@ -85,6 +85,35 @@ async function parseKMLFile(file: File) { const doc = new DOMParser().parseFromS
 async function parseKMZFile(file: File) { const JSZip = (await import('jszip')).default; const zip = await JSZip.loadAsync(file); const entry = Object.values(zip.files).find(f => !f.dir && f.name.toLowerCase().endsWith('.kml')); if (!entry) throw new Error('No KML inside KMZ'); const doc = new DOMParser().parseFromString(await entry.async('text'), 'application/xml'); return kmlToLayers(doc, file.name.replace(/\.kmz$/i, '')) }
 async function parseGeoJSONFile(file: File) { const gj = JSON.parse(await file.text()); const fc = gj.type === 'FeatureCollection' ? gj : { type: 'FeatureCollection' as const, features: [gj.type === 'Feature' ? gj : { type: 'Feature', geometry: gj, properties: {} }] }; return [{ name: file.name.replace(/\.(geo)?json$/i, ''), geojson: fc }] }
 
+/* ── BBOX ──
+   Compute the lng/lat bounds of every coordinate in a FeatureCollection.
+   Used by the per-layer zoom button. */
+function bboxOf(fc: GeoJSON.FeatureCollection): [number, number, number, number] | null {
+  let xmin = Infinity, ymin = Infinity, xmax = -Infinity, ymax = -Infinity
+  const walk = (c: any) => {
+    if (!Array.isArray(c)) return
+    if (typeof c[0] === 'number') {
+      const x = Number(c[0]), y = Number(c[1])
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return
+      if (x < xmin) xmin = x; if (y < ymin) ymin = y
+      if (x > xmax) xmax = x; if (y > ymax) ymax = y
+      return
+    }
+    for (const cc of c) walk(cc)
+  }
+  for (const f of fc.features) {
+    const g: any = f.geometry
+    if (!g) continue
+    if (g.type === 'GeometryCollection' && Array.isArray(g.geometries)) {
+      for (const gg of g.geometries) walk(gg.coordinates)
+    } else if (g.coordinates) {
+      walk(g.coordinates)
+    }
+  }
+  if (!Number.isFinite(xmin)) return null
+  return [xmin, ymin, xmax, ymax]
+}
+
 /* ── GEODESY ── */
 function haversineKm(c1: number[], c2: number[]) { const R = 6371, toRad = (d: number) => d * Math.PI / 180; const dLat = toRad(c2[1] - c1[1]), dLon = toRad(c2[0] - c1[0]); const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(c1[1])) * Math.cos(toRad(c2[1])) * Math.sin(dLon / 2) ** 2; return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) }
 function geomLengthKm(g: any): number { if (!g) return 0; if (g.type === 'LineString') { let km = 0; for (let i = 0; i < g.coordinates.length - 1; i++) km += haversineKm(g.coordinates[i], g.coordinates[i + 1]); return km } if (g.type === 'MultiLineString') return g.coordinates.reduce((s: number, l: number[][]) => { let km = 0; for (let i = 0; i < l.length - 1; i++) km += haversineKm(l[i], l[i + 1]); return s + km }, 0); if (g.type === 'GeometryCollection') return (g.geometries || []).reduce((s: number, gg: any) => s + geomLengthKm(gg), 0); return 0 }
@@ -95,6 +124,39 @@ interface FeatureInfo { feature: GeoJSON.Feature; color: string; layerId: string
 interface ToastItem { id: number; msg: string; type: string }
 let gid = 1, lid = 1, tid = 1
 
+/* ── Re-build the KML folder hierarchy from features stored in DB ──
+   The upload pipeline writes the full folder path into `properties.__folder`.
+   A loaded dataset becomes one LayerData per unique path, so the sidebar
+   shows the KML's layered structure instead of a single flat layer. */
+function splitFeaturesByFolder(features: GeoJSON.Feature[], datasetName: string): LayerData[] {
+  const buckets = new Map<string, GeoJSON.Feature[]>()
+  for (const f of features) {
+    const fld = (f.properties as any)?.__folder
+    const path = Array.isArray(fld) && fld.length > 0 ? fld.join(' / ') : datasetName
+    const arr = buckets.get(path) || []
+    arr.push(f)
+    buckets.set(path, arr)
+  }
+  // Stable order: roughly the order folders first appeared.
+  return Array.from(buckets.entries()).map(([path, feats]) => {
+    const fc: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: feats }
+    // Folder name (leaf) drives auto-color via the same regex rules used
+    // for fresh uploads — e.g. a "POPs" folder gets the POP color.
+    const leaf = path.split(' / ').pop() || path
+    return {
+      id: String(lid++),
+      name: path,
+      color: LAYER_TYPES[autoType(leaf)].color,
+      visible: true,
+      geojson: fc,
+      geomType: detectGeomType(fc),
+      count: feats.length,
+      fillAttr: null,
+      colorMap: null,
+    }
+  })
+}
+
 /* ── MAIN ── */
 export default function Home() {
   const [groups, setGroups] = useState<FileGroup[]>([])
@@ -102,6 +164,15 @@ export default function Home() {
   // basemap handled by Google Maps built-in controls
   const [featureInfo, setFeatureInfo] = useState<FeatureInfo | null>(null)
   const [selectedFeature, setSelectedFeature] = useState<GeoJSON.Feature | null>(null)
+  const [zoomTarget, setZoomTarget] = useState<{ bbox: [number, number, number, number]; tick: number } | null>(null)
+  const zoomTickRef = useRef(0)
+
+  const zoomToLayer = useCallback((layer: LayerData) => {
+    const box = bboxOf(layer.geojson)
+    if (!box) return
+    zoomTickRef.current += 1
+    setZoomTarget({ bbox: box, tick: zoomTickRef.current })
+  }, [])
   const [toasts, setToasts] = useState<ToastItem[]>([])
   const [attrTable, setAttrTable] = useState<{ layerId: string; layerName: string } | null>(null)
   const [globalSearch, setGlobalSearch] = useState('')
@@ -145,12 +216,13 @@ export default function Home() {
       const assets = await fetch(`/api/assets?dataset_id=${ds.id}`).then(r => r.json())
       if (!Array.isArray(assets) || !assets.length) { showToast('No features in dataset', 'warn'); setLoading(false); return }
       const features: GeoJSON.Feature[] = assets.map((a: any) => ({ type: 'Feature' as const, geometry: a.geometry, properties: { ...a.properties, name: a.name || a.properties?.name, _color: a.properties?.__color || a.properties?._color } }))
-      const geojson: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features }
+      // Re-create the KML folder hierarchy from properties.__folder so each
+      // folder shows as its own toggleable layer in the sidebar.
+      const layers = splitFeaturesByFolder(features, ds.name)
       const groupId = gid++
-      const layer: LayerData = { id: String(lid++), name: ds.name, color: LAYER_TYPES[autoType(ds.name)].color, visible: true, geojson, geomType: detectGeomType(geojson), count: features.length, fillAttr: null, colorMap: null }
-      setGroups(prev => [...prev, { id: groupId, filename: `📂 ${ds.name}`, expanded: true, visible: true, layers: [layer] }])
+      setGroups(prev => [...prev, { id: groupId, filename: `📂 ${ds.name}`, expanded: true, visible: true, layers }])
       setLoadedDatasetIds(prev => new Set(prev).add(ds.id))
-      showToast(`Loaded "${ds.name}" — ${features.length} features`)
+      showToast(`Loaded "${ds.name}" — ${features.length} features across ${layers.length} layer${layers.length === 1 ? '' : 's'}`)
     } catch (e: any) { showToast(`Failed to load: ${e.message}`, 'error') }
     setLoading(false)
   }, [loadedDatasetIds, showToast])
@@ -235,14 +307,9 @@ export default function Home() {
 
             if (arr.length > 0) {
               const features = buildFeatures(arr)
-              const geojson: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features }
-              const layer: LayerData = {
-                id: String(lid++), name: ds.name,
-                color: LAYER_TYPES[autoType(ds.name)].color,
-                visible: true, geojson, geomType: detectGeomType(geojson),
-                count: features.length, fillAttr: null, colorMap: null,
-              }
-              const group: FileGroup = { id: gid++, filename: ds.name, expanded: true, visible: true, layers: [layer] }
+              // One layer per KML folder path — same hierarchy a fresh upload produces.
+              const layers = splitFeaturesByFolder(features, ds.name)
+              const group: FileGroup = { id: gid++, filename: ds.name, expanded: true, visible: true, layers }
               setGroups(prev => [...prev, group])
               setLoadedDatasetIds(prev => new Set(prev).add(ds.id))
             }
@@ -501,7 +568,7 @@ export default function Home() {
                   </div>
                   {g.expanded && g.layers.map(l => {
                     const gb = geomBadge(l.geomType)
-                    return <LayerRow key={l.id} layer={l} gb={gb} onToggle={() => toggleLayer(l.id)} onRemove={() => removeLayer(l.id)} onColorChange={c => changeLayerColor(l.id, c)} onApplyFill={(f, m) => applyFillAttr(l.id, f, m)} onResetFill={() => resetFillAttr(l.id)} onOpenTable={() => setAttrTable({ layerId: l.id, layerName: l.name })} fields={getLayerFields(l)} />
+                    return <LayerRow key={l.id} layer={l} gb={gb} onToggle={() => toggleLayer(l.id)} onRemove={() => removeLayer(l.id)} onColorChange={c => changeLayerColor(l.id, c)} onApplyFill={(f, m) => applyFillAttr(l.id, f, m)} onResetFill={() => resetFillAttr(l.id)} onOpenTable={() => setAttrTable({ layerId: l.id, layerName: l.name })} onZoom={() => zoomToLayer(l)} fields={getLayerFields(l)} />
                   })}
                 </div>
               ))}
@@ -543,6 +610,7 @@ export default function Home() {
             layers={allLayers}
             selectedFeature={selectedFeature}
             filter={mapFilter}
+            zoomTarget={zoomTarget}
             onRenderProgress={onRenderProgress}
             onFeatureClick={(f, c, ln) => { const layer = allLayers.find(l => l.geojson.features.includes(f)); setFeatureInfo({ feature: f, color: c, layerId: layer?.id || '', layerName: ln || layer?.name || '' }); setSelectedFeature(f) }}
           />
@@ -573,7 +641,7 @@ export default function Home() {
 }
 
 /* ── LAYER ROW ── */
-function LayerRow({ layer, gb, onToggle, onRemove, onColorChange, onApplyFill, onResetFill, onOpenTable, fields }: { layer: LayerData; gb: { cls: string; txt: string }; onToggle: () => void; onRemove: () => void; onColorChange: (c: string) => void; onApplyFill: (f: string, m: 'categorical' | 'graduated') => void; onResetFill: () => void; onOpenTable: () => void; fields: string[] }) {
+function LayerRow({ layer, gb, onToggle, onRemove, onColorChange, onApplyFill, onResetFill, onOpenTable, onZoom, fields }: { layer: LayerData; gb: { cls: string; txt: string }; onToggle: () => void; onRemove: () => void; onColorChange: (c: string) => void; onApplyFill: (f: string, m: 'categorical' | 'graduated') => void; onResetFill: () => void; onOpenTable: () => void; onZoom: () => void; fields: string[] }) {
   const [attrOpen, setAttrOpen] = useState(false)
   const [selField, setSelField] = useState(layer.fillAttr || '')
   const [selMode, setSelMode] = useState<'categorical' | 'graduated'>('categorical')
@@ -589,6 +657,7 @@ function LayerRow({ layer, gb, onToggle, onRemove, onColorChange, onApplyFill, o
         <span className="flex-1 text-xs text-slate-700 truncate font-medium" title={layer.name}>{layer.name}</span>
         <span className="text-[10px] text-slate-400 font-mono">{layer.count}</span>
         <div className="flex gap-0.5 shrink-0">
+          <button onClick={onZoom} className="w-6 h-6 rounded-md flex items-center justify-center text-[10px] bg-slate-100 text-slate-500 hover:bg-emerald-50 hover:text-emerald-600 transition-colors" title="Zoom to layer">🎯</button>
           <button onClick={onOpenTable} className="w-6 h-6 rounded-md flex items-center justify-center text-[10px] bg-slate-100 text-slate-500 hover:bg-blue-50 hover:text-blue-600 transition-colors" title="Attribute Table">📋</button>
           <button onClick={() => setAttrOpen(!attrOpen)} className={`w-6 h-6 rounded-md flex items-center justify-center text-[10px] transition-colors ${layer.fillAttr ? 'bg-violet-100 text-violet-600' : 'bg-slate-100 text-slate-500 hover:bg-violet-50 hover:text-violet-600'}`} title="Style by Attribute">🎨</button>
           <button onClick={onToggle} className={`w-6 h-6 rounded-md flex items-center justify-center text-[10px] transition-colors ${layer.visible ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-400'}`}>{layer.visible ? '👁' : '—'}</button>
